@@ -121,3 +121,172 @@ class ErrorEnvelope(BaseModel):
     """Documents the failure shape in OpenAPI. Built by ``TriageAPIError.to_envelope``."""
 
     error: ErrorDetail
+
+
+# -- Stage 2: cases, attempts, audit ------------------------------------------
+#
+# Every write endpoint takes the current time explicitly. There is no server clock
+# anywhere in src/, because a 30-day simulation has to run in seconds.
+
+
+class CustomerRef(BaseModel):
+    id: str
+    vpa_handle: str | None = None
+    payer_bank: str | None = None
+    city_tier: int | None = None
+
+
+class MerchantRef(BaseModel):
+    id: str
+    mcc: str | None = None
+
+
+class CaseCreate(BaseModel):
+    """Open a recovery case from a failed payment. Idempotent on payment_id."""
+
+    payment_id: str
+    error_code: str
+    method: str
+    amount: int = Field(..., gt=0, description="Integer paise. Never a float.")
+    failed_at: int = Field(..., description="Unix seconds. Also taken as 'now'.")
+    source: str | None = None
+    rail: str | None = Field(None, description="Instrument-level route; defaults to method")
+    order_id: str | None = None
+    customer: CustomerRef | None = None
+    merchant: MerchantRef | None = None
+    arm: str | None = None
+
+
+class DecideRequest(BaseModel):
+    """Stateless decision. Nothing is stored and no payment is touched."""
+
+    error_code: str
+    now: int = Field(..., description="Unix seconds. Required — there is no server clock.")
+    method: str | None = None
+    attempt_number: int = Field(1, ge=1)
+
+
+class AttemptCreate(BaseModel):
+    now: int = Field(..., description="Unix seconds. Required — there is no server clock.")
+
+
+class StatusPollRequest(BaseModel):
+    now: int
+    resolution: str = Field(
+        ..., description="'succeeded' (authorised late) or 'failed' (outcome now known)"
+    )
+
+
+class StopRequest(BaseModel):
+    now: int
+    reason: str = "operator_stopped"
+
+
+class DowntimeCreate(BaseModel):
+    method: str
+    severity: str
+    begin: int
+    scope: str = "all"
+    instrument: str | None = None
+    status: str = "started"
+    end: int | None = None
+
+
+class Decision(BaseModel):
+    decision_id: str
+    error_code: str
+    action: str
+    family: str
+    recoverable: bool
+    scheduled_at: int | None = Field(
+        None, description="Always null for the five non-retrying classes (I-4)"
+    )
+    target_rail: str | None = None
+    min_wait_hours: int
+    reason_code: str
+    advice: str = Field(..., description="Analogue of Stripe's advice_code")
+    explanation: str
+    next_steps: str
+    model_eligible: bool
+    constraints: dict
+
+
+class AttemptRecord(BaseModel):
+    id: str
+    attempt_number: int
+    idempotency_key: str
+    action: str
+    target_rail: str | None
+    scheduled_at: int | None
+    executed_at: int
+    outcome: str
+    error_code: str | None
+    latency_ms: int
+
+
+class AuditRecord(BaseModel):
+    at: int
+    from_state: str | None
+    to_state: str
+    actor: str
+    reason: str
+    idempotency_key: str | None = None
+    detail: dict | None = None
+
+
+class CaseSummary(BaseModel):
+    id: str
+    entity: str = "recovery.case"
+    payment_id: str
+    status: str = Field(..., description="Case state machine position")
+    arm: str | None
+    method: str
+    rail: str
+    amount_paise: int
+    error_code: str
+    error_source: str | None
+    failed_at: int
+    max_attempts: int
+    drop_dead_at: int
+    next_attempt_at: int | None
+    status_resolved_at: int | None
+    recovered_at: int | None
+    recovered_amount_paise: int | None
+    created_at: int
+    attempt_count: int = 0
+
+
+class CaseDetail(CaseSummary):
+    decision: Decision | None = None
+    attempts: list[AttemptRecord] = []
+    audit: list[AuditRecord] = []
+
+
+class CaseCollection(BaseModel):
+    entity: str = "collection"
+    count: int
+    items: list[CaseSummary]
+
+
+class AttemptResult(BaseModel):
+    entity: str = "recovery.attempt"
+    attempt: AttemptRecord
+    case: CaseSummary
+
+
+class DowntimeRecord(BaseModel):
+    id: str
+    entity: str = "payment.downtime"
+    method: str
+    scope: str
+    instrument: str | None
+    severity: str
+    status: str
+    begin: int
+    end: int | None
+
+
+class DowntimeCollection(BaseModel):
+    entity: str = "collection"
+    count: int
+    items: list[DowntimeRecord]

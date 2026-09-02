@@ -135,3 +135,67 @@ class ErrorCodeNotFoundError(NotFoundError):
             field="code",
         )
         self.error_code = error_code
+
+
+class IdempotencyConflictError(TriageAPIError):
+    """The idempotency key has already been used. The double-charge guard. (I-5)
+
+    Raised off the UNIQUE index on ``attempts.idempotency_key``, not off an
+    application-level check — a race that gets past the pre-check still lands here.
+    """
+
+    status_code = 409
+    code = "IDEMPOTENCY_CONFLICT"
+
+    def __init__(self, key: str, *, step: str = "record_attempt") -> None:
+        super().__init__(
+            f"idempotency key {key!r} has already been used on this case",
+            reason="idempotency_key_reused",
+            step=step,
+            field="Idempotency-Key",
+        )
+        self.key = key
+
+
+class AwaitingStatusError(TriageAPIError):
+    """The prior outcome is unresolved; attempting now risks a double charge. (I-6)
+
+    Razorpay's own documentation notes that pending transactions may authorise late
+    and that a deemed transaction's outcome is unknown until the following day. This
+    is that guard surfacing at the API boundary.
+    """
+
+    status_code = 423
+    code = "AWAITING_STATUS"
+
+    def __init__(self, case_id: str, *, step: str = "recovery_attempt") -> None:
+        super().__init__(
+            f"case {case_id} has an unresolved prior outcome; poll status before "
+            f"attempting again",
+            reason="prior_outcome_unresolved",
+            step=step,
+            field="case_id",
+        )
+        self.case_id = case_id
+
+
+class PolicyViolationError(TriageAPIError):
+    """The action would breach max_attempts or drop_dead_at. (I-7)"""
+
+    status_code = 422
+    code = "POLICY_VIOLATION"
+
+    def __init__(
+        self, description: str, *, reason: str, step: str = "recovery_attempt"
+    ) -> None:
+        super().__init__(description, reason=reason, step=step, field="case_id")
+
+
+class ConflictError(TriageAPIError):
+    """The request conflicts with the current state of the entity."""
+
+    status_code = 409
+    code = "CONFLICT_ERROR"
+
+    def __init__(self, description: str, *, reason: str, step: str) -> None:
+        super().__init__(description, reason=reason, step=step)

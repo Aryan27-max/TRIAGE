@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Path, Query, Request
 
+from src.api.deps import get_engine
 from src.api.errors import ErrorCodeNotFoundError, InvalidQueryParamError
 from src.api.schemas import (
     ActionClass,
@@ -18,23 +19,13 @@ from src.api.schemas import (
     ErrorPolicy,
     ErrorPolicyCollection,
 )
-from src.policy.engine import (
-    ACTIONS,
-    FAMILIES,
-    PolicyEngine,
-    UnknownErrorCodeError,
-)
+from src.policy.engine import ACTIONS, FAMILIES, UnknownErrorCodeError
 
 router = APIRouter(prefix="/v1/errors", tags=["errors"])
 
 _BOOL_TRUE = frozenset({"true", "1"})
 _BOOL_FALSE = frozenset({"false", "0"})
 _BOOL_ALLOWED = ("true", "false", "1", "0")
-
-
-def get_engine(request: Request) -> PolicyEngine:
-    """The single engine instance the lifespan loaded."""
-    return request.app.state.policy_engine
 
 
 def _parse_recoverable(value: str | None) -> bool | None:

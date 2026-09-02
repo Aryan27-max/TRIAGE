@@ -28,7 +28,7 @@ Built for the Razorpay Buildathon, Track 03 — AI Revenue Recovery. Deadline: *
 |---|---|---|
 | 0 | Research and taxonomy | **Done** — `research/`, `error_policy.json` |
 | 1 | Skeleton + policy engine | **Done** — `src/policy/`, `src/api/`, 75 tests green |
-| 2 | Simulator + case engine | Not started |
+| 2 | Simulator + case engine | **Done** — `src/simulator/`, `src/store/`, `src/executor/`, 303 tests green |
 | 3 | Two arms + eval harness | Not started — **shippable checkpoint** |
 | 4 | Features + LightGBM | Not started |
 | 5 | Dashboard + README + video | Not started |
@@ -83,8 +83,12 @@ learned.
 
 **I-2 — An unknown error code raises. It never falls back to a retry.**
 Defaulting an unrecognised code to `RETRY_SCHEDULED` is the single most dangerous
-shortcut available here. Unknown code → `BAD_REQUEST_ERROR`, HTTP 400.
-→ `tests/test_policy_coverage.py`
+shortcut available here. **In the decision path** — anywhere a code is submitted as
+input and an action comes back — an unknown code is `BAD_REQUEST_ERROR`, HTTP 400.
+That is `POST /v1/recovery/decide` and case creation. The read-only taxonomy lookup
+`GET /v1/errors/{code}` is not a decision: asking for a row that does not exist is
+`NOT_FOUND_ERROR`, HTTP 404. Both raise; neither ever defaults.
+→ `tests/test_policy_coverage.py`, `tests/test_api_errors.py`
 
 **I-3 — No LLM output ever reaches a money decision.**
 LLMs write explanations and customer message copy. They do not choose actions, times,
@@ -186,6 +190,7 @@ TRIAGE/
 │   ├── 05-api-reference.md
 │   ├── 06-ml-lightgbm.md
 │   ├── 07-build-plan.md
+│   ├── 08-ui-spec.md
 │   └── README.md
 │
 ├── src/
@@ -193,8 +198,11 @@ TRIAGE/
 │   │   └── engine.py               S1 · loads error_policy.json, resolves code → action
 │   ├── api/
 │   │   ├── main.py                 S1 · FastAPI app
+│   │   ├── errors.py               S1 · Razorpay error envelope
+│   │   ├── schemas.py              S1 · Pydantic wire shapes
+│   │   ├── deps.py                 S2 · per-request conn, runner, world
 │   │   ├── routes_errors.py        S1 · GET /v1/errors, /v1/errors/{code}
-│   │   ├── routes_cases.py         S2 · cases, decide, attempts
+│   │   ├── routes_cases.py         S2 · cases, decide, attempts, status-poll
 │   │   ├── routes_rails.py         S2 · rail health
 │   │   └── routes_eval.py          S3 · simulator run, eval report
 │   ├── simulator/
@@ -203,8 +211,8 @@ TRIAGE/
 │   │   ├── world.py                S2 · HIDDEN STATE — see I-12
 │   │   └── rails.py                S2 · downtime event feed
 │   ├── store/
-│   │   ├── schema.sql              S2 · cases, attempts, audit, downtimes
-│   │   └── db.py                   S2 · SQLite access
+│   │   ├── schema.sql              S2 · payments, cases, attempts, audit, downtimes
+│   │   └── db.py                   S2 · SQLite access, row types, derived ids
 │   ├── executor/
 │   │   ├── state.py                S2 · state machine
 │   │   └── runner.py               S2 · bounded executor, idempotency
@@ -282,12 +290,15 @@ produce byte-identical output. Without this, arm comparison is meaningless.
 - **Done when:** `pytest` green, `/v1/errors/insufficient_funds` returns policy, `/docs` renders
 - See `SUMMARY.md` for decisions and carried-over gaps.
 
-### Stage 2 — Simulator + case engine · ~5h
-- [ ] Simulator with hidden world state; scenarios `normal` and `bank_outage` only
-- [ ] `schema.sql` with the `UNIQUE` idempotency index
-- [ ] State machine + bounded executor
-- [ ] `tests/test_idempotency.py`, `tests/test_await_status.py`, `tests/test_hidden_state.py`
+### Stage 2 — Simulator + case engine · ~5h · **DONE**
+- [x] Simulator with hidden world state; scenarios `normal` and `bank_outage` only
+- [x] `schema.sql` with the `UNIQUE` idempotency index
+- [x] State machine + bounded executor
+- [x] `tests/test_idempotency.py`, `tests/test_await_status.py`, `tests/test_hidden_state.py`
+- [x] `tests/test_no_wall_clock.py`, `test_state_machine.py`, `test_bounds.py`,
+      `test_determinism.py`, `test_simulator.py`
 - **Done when:** 2000 payments over 30 days; duplicate → `409`; pending → `423`
+- See `SUMMARY.md` for decisions and carried-over gaps.
 
 ### Stage 3 — Two arms + eval · ~3h · **SHIPPABLE**
 - [ ] `control.py`, `baseline.py`
@@ -357,6 +368,7 @@ Things that will silently break this project.
 | UPI + wallets codes, rail-switch lever, mandates | `research/04-errors-upi-wallets.md` |
 | Endpoint shapes, request/response JSON, error codes | `research/05-api-reference.md` |
 | The 26 features, training config, decision function | `research/06-ml-lightgbm.md` |
+| Dashboard screens, components, states | `research/08-ui-spec.md` |
 | Stage detail, cut list, demo script, interview Q&A | `research/07-build-plan.md` |
 | Machine-readable decision table | `error_policy.json` |
 

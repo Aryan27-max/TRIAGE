@@ -222,3 +222,181 @@ def test_meta_routes_are_not_shadowed_by_the_code_lookup(client: TestClient) -> 
     assert client.get("/v1/errors/meta/actions").status_code == 200
     assert client.get("/v1/errors/meta/coverage").status_code == 200
     assert client.get("/v1/errors/meta").status_code == 404
+
+
+# -- Stage 2: decision, cases, rails -------------------------------------------
+
+
+def test_decide_returns_the_policy_answer(client: TestClient) -> None:
+    from tests.conftest import NOW
+
+    body = client.post(
+        "/v1/recovery/decide",
+        json={"error_code": "insufficient_funds", "now": NOW, "method": "upi"},
+    ).json()
+    assert body["action"] == "RETRY_SCHEDULED"
+    assert body["scheduled_at"] == NOW + 72 * 3600
+    assert body["advice"] == "try_again_later"
+    assert body["decision_id"].startswith("dec_")
+
+
+def test_decide_on_an_unknown_code_is_400(client: TestClient) -> None:
+    # I-2 lands here: the decision path never defaults an unrecognised code.
+    from tests.conftest import NOW
+
+    response = client.post(
+        "/v1/recovery/decide", json={"error_code": "not_a_real_code", "now": NOW}
+    )
+    assert response.status_code == 400, response.text
+    error = response.json()["error"]
+    assert error["code"] == "BAD_REQUEST_ERROR"
+    assert error["reason"] == "unknown_error_code"
+    assert error["field"] == "error_code"
+    assert error["step"] == "recovery_decide"
+
+
+@pytest.mark.parametrize(
+    "code",
+    ["card_expired", "incorrect_pin", "payment_pending", "invalid_amount",
+     "payment_risk_check_failed"],
+)
+def test_decide_never_schedules_a_non_retrying_class(client: TestClient, code: str) -> None:
+    # I-4: scheduled_at is None for all five.
+    from tests.conftest import NOW
+
+    body = client.post(
+        "/v1/recovery/decide", json={"error_code": code, "now": NOW}
+    ).json()
+    assert body["recoverable"] is False
+    assert body["scheduled_at"] is None
+    assert body["constraints"]["attempts_remaining"] == 0
+
+
+def test_switch_rail_names_an_alternative_rail(client: TestClient) -> None:
+    from tests.conftest import NOW
+
+    body = client.post(
+        "/v1/recovery/decide",
+        json={"error_code": "psp_not_available", "now": NOW, "method": "upi"},
+    ).json()
+    assert body["action"] == "SWITCH_RAIL"
+    assert body["target_rail"] == "card"
+
+
+def test_create_case_is_idempotent_on_payment_id(client: TestClient) -> None:
+    from tests.conftest import NOW
+
+    payload = {
+        "payment_id": "pay_IDEMP",
+        "error_code": "insufficient_funds",
+        "method": "upi",
+        "amount": 499000,
+        "failed_at": NOW,
+    }
+    first = client.post("/v1/recovery/cases", json=payload)
+    second = client.post("/v1/recovery/cases", json=payload)
+    assert first.status_code == 201
+    assert second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+
+
+def test_create_case_with_an_unknown_code_is_400(client: TestClient) -> None:
+    from tests.conftest import NOW
+
+    response = client.post(
+        "/v1/recovery/cases",
+        json={
+            "payment_id": "pay_BADCODE",
+            "error_code": "nope",
+            "method": "upi",
+            "amount": 100,
+            "failed_at": NOW,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["reason"] == "unknown_error_code"
+
+
+def test_case_detail_carries_attempts_and_audit(client: TestClient) -> None:
+    from tests.conftest import open_case
+
+    case = open_case(client, error_code="insufficient_funds", payment_id="pay_DETAIL")
+    body = client.get(f"/v1/recovery/cases/{case['id']}").json()
+    assert body["attempts"] == []
+    assert [row["to_state"] for row in body["audit"]] == [
+        "RECEIVED", "DIAGNOSED", "SCHEDULED",
+    ]
+    assert body["decision"]["action"] == "RETRY_SCHEDULED"
+
+
+def test_unknown_case_is_404(client: TestClient) -> None:
+    response = client.get("/v1/recovery/cases/case_nope")
+    assert response.status_code == 404
+    assert response.json()["error"]["reason"] == "case_not_found"
+
+
+def test_case_list_filters(client: TestClient) -> None:
+    from tests.conftest import NOW, open_case
+
+    open_case(client, error_code="insufficient_funds", payment_id="pay_L1")
+    open_case(client, error_code="incorrect_pin", payment_id="pay_L2")
+
+    everything = client.get("/v1/recovery/cases").json()
+    assert everything["count"] == 2
+
+    scheduled = client.get("/v1/recovery/cases", params={"state": "SCHEDULED"}).json()
+    assert scheduled["count"] == 1
+    assert scheduled["items"][0]["error_code"] == "insufficient_funds"
+
+    by_code = client.get(
+        "/v1/recovery/cases", params={"error_code": "incorrect_pin"}
+    ).json()
+    assert by_code["count"] == 1
+
+
+def test_case_list_rejects_an_unknown_state(client: TestClient) -> None:
+    response = client.get("/v1/recovery/cases", params={"state": "PENDING"})
+    assert response.status_code == 400
+    assert response.json()["error"]["field"] == "state"
+
+
+def test_rail_health_is_empty_before_a_run(client: TestClient) -> None:
+    body = client.get("/v1/rails/health").json()
+    assert body["entity"] == "collection"
+    assert body["count"] == 0
+
+
+def test_injecting_a_downtime_shows_up_in_the_feed(client: TestClient) -> None:
+    from tests.conftest import NOW
+
+    created = client.post(
+        "/v1/rails/health",
+        json={
+            "method": "upi",
+            "scope": "psp",
+            "instrument": "@oksbi",
+            "severity": "high",
+            "begin": NOW,
+            "end": NOW + 6 * 3600,
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["entity"] == "payment.downtime"
+    assert created.json()["id"].startswith("down_")
+
+    active = client.get("/v1/rails/health", params={"at": NOW + 3600}).json()
+    assert active["count"] == 1
+
+    later = client.get("/v1/rails/health", params={"at": NOW + 12 * 3600}).json()
+    assert later["count"] == 0
+
+
+def test_injecting_an_unusable_downtime_is_400(client: TestClient) -> None:
+    from tests.conftest import NOW
+
+    response = client.post(
+        "/v1/rails/health",
+        json={"method": "upi", "severity": "catastrophic", "begin": NOW},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["field"] == "severity"
