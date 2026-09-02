@@ -255,17 +255,39 @@ def peak_probability(ctx: CauseContext) -> float:
     return min(base * (multiplier - 1.0) * tiers.get(ctx.city_tier, 1.0), 0.5)
 
 
-def sample_cause(rng: random.Random, ctx: CauseContext) -> Cause | None:
+def sample_cause(
+    rng: random.Random, ctx: CauseContext, sticky: random.Random | None = None
+) -> Cause | None:
     """Resolve one attempt. ``None`` means the payment went through.
 
     The order is the causal order, not a ranking: a merchant that cannot accept the
     method never reaches the bank, an outage swallows the request before the customer
     sees a PIN pad, and a short balance is decided before habit gets a say.
+
+    Two kinds of blocker, and the difference decides whether a blind retry can ever
+    help:
+
+    * **Persistent** — a merchant that has not enabled the method, a payment the risk
+      engine rejected, a customer who mistyped their PIN. None of these correct
+      themselves. They are drawn from ``sticky``, a generator keyed on the payment
+      rather than the attempt, so a re-attempt that changes nothing hits the same wall
+      and reports the same code.
+    * **Time-varying** — an outage window, a short balance, an evening-peak timeout, a
+      daily limit. These are drawn from ``rng``, keyed per attempt, and are exactly
+      the ones a retry at a different moment can clear.
+
+    That split is a claim about causes, made without consulting the policy table: it
+    is the simulator's own model of what a wrong PIN is, not a reading of what the
+    taxonomy says to do about one. The evaluation is therefore a test of whether
+    acting on that claim beats ignoring it — see the report's caveats.
     """
-    # 1. Merchant misconfiguration. Nothing about the customer matters here.
+    sticky = sticky if sticky is not None else rng
+
+    # 1. Merchant misconfiguration. Nothing about the customer matters here, and the
+    #    merchant has not fixed their dashboard between one attempt and the next.
     if ctx.merchant_misconfigured:
-        if rng.random() < CONFIG["merchant_misconfig_failure_rate"]:  # type: ignore[operator]
-            return weighted_pick(rng, MERCHANT_CODES)
+        if sticky.random() < CONFIG["merchant_misconfig_failure_rate"]:  # type: ignore[operator]
+            return weighted_pick(sticky, MERCHANT_CODES)
 
     # 2. Rail degradation. Observable to the decision path through the Downtime feed.
     if ctx.outage_severity is not None:
@@ -285,9 +307,10 @@ def sample_cause(rng: random.Random, ctx: CauseContext) -> Cause | None:
     if ctx.limit_prone and rng.random() < CONFIG["limit_breach_rate"]:  # type: ignore[operator]
         return weighted_pick(rng, LIMIT_CODES[ctx.method])
 
-    # 6. Risk and compliance blocks.
-    if rng.random() < CONFIG["risk_block_rate"]:  # type: ignore[operator]
-        return weighted_pick(rng, RISK_CODES)
+    # 6. Risk and compliance blocks. A payment the risk engine rejected is the same
+    #    payment an hour later, so this is drawn once per payment, not per attempt.
+    if sticky.random() < CONFIG["risk_block_rate"]:  # type: ignore[operator]
+        return weighted_pick(sticky, RISK_CODES)
 
     # 7. Outcome genuinely unknown. Must survive as its own class. (I-6)
     if rng.random() < CONFIG["unknown_outcome_rate"]:  # type: ignore[operator]
@@ -297,9 +320,11 @@ def sample_cause(rng: random.Random, ctx: CauseContext) -> Cause | None:
     if rng.random() < peak_probability(ctx):
         return weighted_pick(rng, PEAK_CODES)
 
-    # 9. Residual customer-side.
-    if rng.random() < customer_side_probability(ctx):
-        return weighted_pick(rng, CUSTOMER_CODES[ctx.method])
+    # 9. Residual customer-side. Sticky: a customer who mistyped their PIN, cancelled
+    #    on the confirmation screen or has no PIN set will do the same thing again on
+    #    a retry they were never told about. Only being told — a nudge — changes it.
+    if sticky.random() < customer_side_probability(ctx):
+        return weighted_pick(sticky, CUSTOMER_CODES[ctx.method])
 
     return None
 

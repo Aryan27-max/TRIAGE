@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol
 
 from src.executor import state as st
-from src.policy.engine import PolicyEngine, PolicyEntry
+from src.policy.engine import RETRYING_ACTIONS, PolicyEngine, PolicyEntry
 from src.store import db
 
 HOUR = 3600
@@ -36,6 +36,16 @@ MIN_INTERVAL_SECONDS = RETRY_NOW_FLOOR_SECONDS
 
 DEFAULT_MAX_ATTEMPTS = 4  # research/02 §2.3
 DEFAULT_DROP_DEAD_DAYS = 7  # assumption (ours): no published cutoff convention
+
+# How long a nudged customer has to act before the case is written off. Assumption
+# (ours): 48 hours is the window recovery emails and abandoned-cart flows typically
+# allow. Fixed before any arm was run.
+NUDGE_RESPONSE_WINDOW_HOURS = 48
+
+# The action string the world understands for "has this customer acted yet?". Held as
+# a literal rather than imported from src.simulator.world, because the executor has no
+# import edge into the simulator. (I-12)
+NUDGE_ACTION = "NUDGE"
 
 # Where SWITCH_RAIL sends a payment. Fixed, not sampled: the executor is
 # deterministic, and a rail choice that varied per run would break arm parity.
@@ -119,6 +129,21 @@ class AttemptResolver(Protocol):
     def attempt(
         self, case: db.CaseView, action: str, target_rail: str | None, at_ts: int
     ) -> OutcomeLike: ...
+
+
+class ArmDecisionLike(Protocol):
+    """What the runner reads off an arm's decision.
+
+    Declared structurally so the executor does not import ``src.arms``, and the arms
+    do not import the executor's concrete types. The dependency runs one way: the
+    evaluation harness wires the two together, neither reaches for the other.
+    """
+
+    action: str
+    target_rail: str | None
+    scheduled_at: int | None
+    reason_code: str
+    policy_routed: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -221,6 +246,9 @@ class Runner:
         error_source: str | None,
         failed_at: int,
         arm: str | None = None,
+        city_tier: int | None = None,
+        vpa_handle: str | None = None,
+        payer_bank: str | None = None,
     ) -> db.Case:
         """A case row in RECEIVED. Not yet inserted — ``state.open_case`` does that."""
         return db.Case(
@@ -234,12 +262,16 @@ class Runner:
             error_code=error_code,
             error_source=error_source,
             failed_at=failed_at,
+            city_tier=city_tier,
+            vpa_handle=vpa_handle,
+            payer_bank=payer_bank,
             state=st.RECEIVED,
             arm=arm,
             max_attempts=self.max_attempts,
             drop_dead_at=failed_at + self.drop_dead_days * DAY,
             next_attempt_at=None,
             status_resolved_at=None,
+            nudge_sent_at=None,
             recovered_at=None,
             recovered_amount_paise=None,
             created_at=failed_at,
@@ -378,8 +410,20 @@ class Runner:
         *,
         now: int,
         idempotency_key: str | None = None,
+        action: str | None = None,
+        target_rail: str | None = None,
+        actor: str = "executor",
+        policy_routed: bool = True,
     ) -> tuple[db.Attempt, db.Case]:
-        """Run one attempt end to end: bounds, audit, resolve, record, transition."""
+        """Run one attempt end to end: bounds, audit, resolve, record, transition.
+
+        ``action`` defaults to whatever the policy table says about the case's current
+        code — that is TRIAGE's own behaviour, and what the API serves. An arm may
+        override it: the control arm retries every code on a fixed schedule and must
+        not have policy quietly correct it, or there would be nothing to measure
+        against. ``policy_routed`` says whether the *outcome* is re-diagnosed the same
+        way. The bounds, the idempotency guard and the I-6 block are not overridable.
+        """
         # The idempotency check comes first, before the bounds. A client replaying a
         # request must be told it is a duplicate — not told about whatever state the
         # original attempt left the case in. Reporting a replay as a bound breach
@@ -392,21 +436,25 @@ class Runner:
         attempt_number = self.check_bounds(conn, case, now=now)
         entry = self.engine.resolve(case.error_code)
 
-        # Defence in depth behind the structural guarantee: a non-retrying class can
-        # only be here via a resolved status poll.
-        if not entry.is_retrying and case.status_resolved_at is None:
-            raise PolicyViolation(
-                "action_class_does_not_retry",
-                f"{entry.action} never schedules a retry",
+        if action is None:
+            action = entry.action
+            # Defence in depth behind the structural guarantee: on the policy-routed
+            # path a non-retrying class can only be here via a resolved status poll.
+            if not entry.is_retrying and case.status_resolved_at is None:
+                raise PolicyViolation(
+                    "action_class_does_not_retry",
+                    f"{entry.action} never schedules a retry",
+                )
+            target_rail = (
+                ALTERNATIVE_RAIL.get(case.method)
+                if entry.action == "SWITCH_RAIL"
+                else None
             )
 
         key = idempotency_key or f"{case.id}:{attempt_number}"
         if idempotency_key is None and db.idempotency_key_exists(conn, key):
             raise db.IdempotencyConflict(key)
 
-        target_rail = (
-            ALTERNATIVE_RAIL.get(case.method) if entry.action == "SWITCH_RAIL" else None
-        )
         scheduled_at = case.next_attempt_at
 
         # I-8. The audit row lands before the attempt executes, not after it returns.
@@ -415,12 +463,12 @@ class Runner:
             case_id=case.id,
             from_state=st.SCHEDULED,
             to_state=st.ATTEMPTING,
-            actor="executor",
-            reason=f"executing {entry.action}",
+            actor=actor,
+            reason=f"executing {action}",
             now=now,
             idempotency_key=key,
             detail={
-                "action": entry.action,
+                "action": action,
                 "target_rail": target_rail,
                 "attempt_number": attempt_number,
             },
@@ -438,7 +486,7 @@ class Runner:
                 failed_at=case.failed_at,
                 attempt_number=attempt_number,
             ),
-            entry.action,
+            action,
             target_rail,
             now,
         )
@@ -450,7 +498,7 @@ class Runner:
                 case_id=case.id,
                 attempt_number=attempt_number,
                 idempotency_key=key,
-                action=entry.action,
+                action=action,
                 target_rail=target_rail,
                 scheduled_at=scheduled_at,
                 executed_at=now,
@@ -461,7 +509,14 @@ class Runner:
         )
 
         case = self._settle(
-            conn, case, outcome, now=now, attempt_number=attempt_number, key=key
+            conn,
+            case,
+            outcome,
+            now=now,
+            attempt_number=attempt_number,
+            key=key,
+            actor=actor,
+            policy_routed=policy_routed,
         )
         return attempt, case
 
@@ -474,6 +529,8 @@ class Runner:
         now: int,
         attempt_number: int,
         key: str,
+        actor: str = "executor",
+        policy_routed: bool = True,
     ) -> db.Case:
         """ATTEMPTING -> wherever the outcome puts the case."""
         if outcome.success:
@@ -482,7 +539,7 @@ class Runner:
                 case_id=case.id,
                 from_state=st.ATTEMPTING,
                 to_state=st.RECOVERED,
-                actor="executor",
+                actor=actor,
                 reason="attempt succeeded",
                 now=now,
                 idempotency_key=key,
@@ -505,6 +562,22 @@ class Runner:
 
         if attempt_number >= refreshed.max_attempts:
             return self._exhaust(conn, refreshed, now=now, reason="max_attempts_reached")
+
+        if not policy_routed:
+            # The arm owns routing on this path. Hand the case back ready for its next
+            # decision rather than letting the policy table redirect an arm that never
+            # consulted it — that would quietly turn the control arm into the baseline.
+            return st.transition(
+                conn,
+                case_id=refreshed.id,
+                from_state=st.ATTEMPTING,
+                to_state=st.SCHEDULED,
+                actor=actor,
+                reason="attempt failed, awaiting the arm's next decision",
+                now=now,
+                detail={"error_code": new_code, "attempt_number": attempt_number},
+                next_attempt_at=now,
+            )
 
         if not entry.is_retrying:
             destination = NON_RETRYING_DESTINATION[entry.action]
@@ -540,6 +613,295 @@ class Runner:
                 "scheduled_at": scheduled_at,
             },
             next_attempt_at=scheduled_at,
+        )
+
+    # -- arm-driven execution --------------------------------------------------
+    #
+    # An arm decides; the runner executes and enforces. Everything below takes the
+    # action from the arm rather than from the policy table, so the control arm can be
+    # genuinely naive. The bounds (I-7), the idempotency guard (I-5) and the
+    # AWAIT_STATUS block (I-6) are not overridable by any arm.
+
+    def apply(
+        self,
+        conn: sqlite3.Connection,
+        case: db.Case,
+        decision: ArmDecisionLike,
+        world: AttemptResolver,
+        *,
+        now: int,
+        actor: str = "arm",
+    ) -> db.Case:
+        """Execute one arm decision. Returns the case as it now stands."""
+        if st.is_terminal(case.state):
+            return case
+        if now > case.drop_dead_at:
+            return self._exhaust(conn, case, now=now, reason="drop_dead_at_passed")
+
+        entry = self.engine.resolve(case.error_code)
+
+        # I-6, enforced above the arm. An unresolved AWAIT_STATUS code can never be
+        # attempted, whatever the arm asks for — including an arm that never reads the
+        # policy table. Retrying one of these double-charges the customer.
+        if entry.action == "AWAIT_STATUS" and case.status_resolved_at is None:
+            if case.state != st.AWAITING_STATUS:
+                case = self._ensure_diagnosed(
+                    conn, case, now=now, actor="executor", reason="await_status_guard"
+                )
+                return st.transition(
+                    conn,
+                    case_id=case.id,
+                    to_state=st.AWAITING_STATUS,
+                    actor="executor",
+                    reason="outcome unresolved; attempting would risk a double charge",
+                    now=now,
+                    detail={"error_code": case.error_code, "guard": "I-6"},
+                    next_attempt_at=None,
+                )
+            if decision.action != "AWAIT_STATUS":
+                # This arm has no status poll. The case waits and expires at its
+                # drop-dead time. That is the safe outcome, not a bug.
+                return case
+            return self.poll_status(conn, case, world, now=now, actor=actor)
+
+        action = decision.action
+        if action in RETRYING_ACTIONS:
+            return self._apply_retry(conn, case, decision, world, now=now, actor=actor)
+        if action == "NUDGE_CUSTOMER":
+            return self._apply_nudge(conn, case, decision, world, now=now, actor=actor)
+        if action == "AWAIT_STATUS":
+            return case  # nothing to poll: the code is not an AWAIT_STATUS code
+        return self._apply_terminal(conn, case, decision, now=now, actor=actor)
+
+    def _ensure_diagnosed(
+        self,
+        conn: sqlite3.Connection,
+        case: db.Case,
+        *,
+        now: int,
+        actor: str,
+        reason: str,
+    ) -> db.Case:
+        """RECEIVED -> DIAGNOSED, attributed to whoever made the call.
+
+        The actor matters in the trail: a case routed by the control arm must not read
+        as though the policy engine decided it.
+        """
+        if case.state != st.RECEIVED:
+            return case
+        return st.transition(
+            conn,
+            case_id=case.id,
+            from_state=st.RECEIVED,
+            to_state=st.DIAGNOSED,
+            actor=actor,
+            reason=reason,
+            now=now,
+            detail={"error_code": case.error_code},
+        )
+
+    def _apply_retry(
+        self,
+        conn: sqlite3.Connection,
+        case: db.Case,
+        decision: ArmDecisionLike,
+        world: AttemptResolver,
+        *,
+        now: int,
+        actor: str,
+    ) -> db.Case:
+        case = self._ensure_diagnosed(
+            conn, case, now=now, actor=actor, reason=decision.reason_code
+        )
+        scheduled_at = decision.scheduled_at if decision.scheduled_at is not None else now
+
+        if case.state == st.DIAGNOSED:
+            if scheduled_at > case.drop_dead_at:
+                return self._exhaust(conn, case, now=now, reason="drop_dead_at_passed")
+            case = st.transition(
+                conn,
+                case_id=case.id,
+                to_state=st.SCHEDULED,
+                actor=actor,
+                reason=decision.reason_code,
+                now=now,
+                detail={"action": decision.action, "scheduled_at": scheduled_at},
+                next_attempt_at=scheduled_at,
+            )
+        if case.state != st.SCHEDULED:
+            return case
+
+        if scheduled_at > now:
+            if case.next_attempt_at != scheduled_at:
+                db.update_case(conn, case.id, next_attempt_at=scheduled_at)
+                refreshed = db.get_case(conn, case.id)
+                assert refreshed is not None
+                return refreshed
+            return case
+
+        try:
+            _, case = self.execute_attempt(
+                conn,
+                case,
+                world,
+                now=now,
+                action=decision.action,
+                target_rail=decision.target_rail,
+                actor=actor,
+                policy_routed=decision.policy_routed,
+            )
+        except PolicyViolation as exc:
+            return self._exhaust(conn, case, now=now, reason=exc.reason)
+        except AwaitingStatus:
+            return case
+        return case
+
+    def _apply_nudge(
+        self,
+        conn: sqlite3.Connection,
+        case: db.Case,
+        decision: ArmDecisionLike,
+        world: AttemptResolver,
+        *,
+        now: int,
+        actor: str,
+    ) -> db.Case:
+        """Send a nudge, or ask whether an outstanding one has landed.
+
+        A nudge is not an attempt. No idempotency key is consumed, no attempt row is
+        written, and nothing is scheduled — I-4 forbids scheduling a retry on this
+        class, and none is scheduled. If the customer acts, they have paid of their own
+        accord and the case recovers without this system charging anything.
+        """
+        if case.state in (st.RECEIVED, st.DIAGNOSED):
+            case = self._ensure_diagnosed(
+                conn, case, now=now, actor=actor, reason=decision.reason_code
+            )
+            return st.transition(
+                conn,
+                case_id=case.id,
+                to_state=st.ESCALATED,
+                actor=actor,
+                reason="nudge_sent",
+                now=now,
+                detail={
+                    "channel": "sms",
+                    "error_code": case.error_code,
+                    "response_window_hours": NUDGE_RESPONSE_WINDOW_HOURS,
+                },
+                nudge_sent_at=now,
+                next_attempt_at=None,
+            )
+
+        if case.state != st.ESCALATED or case.nudge_sent_at is None:
+            return case
+
+        deadline = case.nudge_sent_at + NUDGE_RESPONSE_WINDOW_HOURS * HOUR
+        if now > deadline:
+            return st.transition(
+                conn,
+                case_id=case.id,
+                to_state=st.EXHAUSTED,
+                actor=actor,
+                reason="nudge_window_expired",
+                now=now,
+                detail={"nudge_sent_at": case.nudge_sent_at, "deadline": deadline},
+                next_attempt_at=None,
+            )
+
+        outcome = world.attempt(
+            self._view(case, attempt_number=1), NUDGE_ACTION, None, now
+        )
+        if not outcome.success:
+            return case
+
+        return st.transition(
+            conn,
+            case_id=case.id,
+            from_state=st.ESCALATED,
+            to_state=st.RECOVERED,
+            actor=actor,
+            reason="customer acted on the nudge and paid",
+            now=now,
+            detail={"hours_after_nudge": (now - case.nudge_sent_at) // HOUR},
+            recovered_at=now,
+            recovered_amount_paise=case.amount_paise,
+            next_attempt_at=None,
+        )
+
+    def _apply_terminal(
+        self,
+        conn: sqlite3.Connection,
+        case: db.Case,
+        decision: ArmDecisionLike,
+        *,
+        now: int,
+        actor: str,
+    ) -> db.Case:
+        """SWITCH_INSTRUMENT, STOP and MERCHANT_ALERT all end the automated path."""
+        case = self._ensure_diagnosed(
+            conn, case, now=now, actor=actor, reason=decision.reason_code
+        )
+        if st.is_terminal(case.state):
+            return case
+        return st.transition(
+            conn,
+            case_id=case.id,
+            to_state=st.STOPPED,
+            actor=actor,
+            reason=decision.reason_code,
+            now=now,
+            detail={"action": decision.action},
+            next_attempt_at=None,
+        )
+
+    def poll_status(
+        self,
+        conn: sqlite3.Connection,
+        case: db.Case,
+        world: AttemptResolver,
+        *,
+        now: int,
+        actor: str = "status_poll",
+    ) -> db.Case:
+        """Ask the acquirer whether a pending payment settled, then act on the answer.
+
+        A late authorisation is modelled as the payment resolving the way an attempt at
+        this moment would — the same latent balance, outage and instrument state decide
+        it. A simplification, stated rather than hidden.
+        """
+        outcome = world.attempt(
+            self._view(case, attempt_number=db.attempt_count(conn, case.id) + 1),
+            "AWAIT_STATUS",
+            None,
+            now,
+        )
+        return self.resolve_status(
+            conn,
+            case,
+            now=now,
+            resolution="succeeded" if outcome.success else "failed",
+        )
+
+    def expire_if_past_deadline(
+        self, conn: sqlite3.Connection, case: db.Case, *, now: int
+    ) -> db.Case:
+        """Close a case whose drop-dead time has passed. (I-7)"""
+        if st.is_terminal(case.state) or now <= case.drop_dead_at:
+            return case
+        return self._exhaust(conn, case, now=now, reason="drop_dead_at_passed")
+
+    def _view(self, case: db.Case, *, attempt_number: int) -> db.CaseView:
+        return db.CaseView(
+            id=case.id,
+            customer_id=case.customer_id,
+            merchant_id=case.merchant_id,
+            method=case.method,
+            rail=case.rail,
+            amount_paise=case.amount_paise,
+            error_code=case.error_code,
+            failed_at=case.failed_at,
+            attempt_number=attempt_number,
         )
 
     # -- status polls ----------------------------------------------------------

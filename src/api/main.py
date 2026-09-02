@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api import routes_cases, routes_errors, routes_rails
+from src.api import routes_cases, routes_errors, routes_eval, routes_rails
 from src.api.errors import TriageAPIError
 from src.api.schemas import Health
 from src.executor.runner import Runner
@@ -34,7 +34,8 @@ does not say what to do about them. TRIAGE is the decision layer.
 
 **Stage 1** exposes the decision table read-only. **Stage 2** adds the case engine:
 open a case from a failed payment, diagnose it against the table, and execute bounded
-attempts with a full audit trail.
+attempts with a full audit trail. **Stage 3** adds the arms and the evaluation
+harness: run a population past two arms and score the gap, losing segments included.
 
 Only **27 of the 110** codes are recoverable without human intervention, so a naive
 "retry three times" loop is wrong on roughly three quarters of failures.
@@ -91,7 +92,7 @@ def create_app(
     app = FastAPI(
         title="TRIAGE",
         description=DESCRIPTION,
-        version="0.2.0",
+        version="0.3.0",
         lifespan=lifespan,
     )
 
@@ -124,6 +125,7 @@ def create_app(
     app.include_router(routes_errors.router)
     app.include_router(routes_cases.router)
     app.include_router(routes_rails.router)
+    app.include_router(routes_eval.router)
     return app
 
 

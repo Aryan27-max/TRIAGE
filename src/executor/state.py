@@ -14,6 +14,9 @@ Two structural properties matter more than the rest:
   states at diagnosis and therefore *cannot* reach an attempt, whatever a later
   caller asks for. AWAITING_STATUS keeps its path to SCHEDULED, gated on a resolved
   poll, which is what I-6 requires.
+* **ESCALATED can still reach RECOVERED.** A nudge that lands is the customer paying
+  again of their own accord — no attempt, no idempotency key, no charge from here.
+  I-4 forbids scheduling a retry, not recovering without one.
 
 Nothing here reads a clock; ``now`` is always passed in.
 """
@@ -56,7 +59,11 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     # past drop_dead_at has nowhere to be scheduled, so it ends here without ever
     # occupying SCHEDULED. (I-7)
     DIAGNOSED: frozenset({SCHEDULED, AWAITING_STATUS, ESCALATED, STOPPED, EXHAUSTED}),
-    SCHEDULED: frozenset({ATTEMPTING, EXHAUSTED, STOPPED}),
+    # AWAITING_STATUS is reachable from here because the I-6 guard must be able to
+    # pull a case out of a scheduled retry the moment its code turns out to carry an
+    # unresolved outcome — which happens when an attempt comes back `payment_pending`
+    # and the case is re-diagnosed. Blocking an attempt is always a legal move.
+    SCHEDULED: frozenset({ATTEMPTING, AWAITING_STATUS, EXHAUSTED, STOPPED}),
     # A failed attempt is re-diagnosed against whatever code came back, so ATTEMPTING
     # must be able to reach every destination diagnosis can: an attempt that fails
     # with `incorrect_pin` escalates, one that fails with `payment_pending` waits.
@@ -67,6 +74,12 @@ LEGAL_TRANSITIONS: dict[str, frozenset[str]] = {
     # is refused and the caller gets 423. (I-6)
     AWAITING_STATUS: frozenset({SCHEDULED, RECOVERED, EXHAUSTED, STOPPED}),
     # Deliberately no edge to SCHEDULED or ATTEMPTING. (I-4)
+    #
+    # RECOVERED is reachable and does not weaken that. I-4 forbids *scheduling a
+    # retry* on a non-retrying class. A nudge that lands means the customer started a
+    # fresh payment themselves: no attempt is scheduled, no idempotency key is
+    # consumed, no attempt row is written. The money arrives without this system
+    # having charged anything.
     ESCALATED: frozenset({RECOVERED, EXHAUSTED, STOPPED}),
     RECOVERED: frozenset(),
     EXHAUSTED: frozenset(),

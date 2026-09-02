@@ -1,201 +1,200 @@
 # SUMMARY — build log
 
-For a human returning after a break. One section per stage, appended, never rewritten.
-Decisions and gaps, not diffs. Read `CLAUDE.md` first for the invariants.
+For a human returning after a break. One section per stage; earlier stages are
+compressed as they age, never deleted. Decisions and gaps, not diffs. Read `CLAUDE.md`
+first for the invariants.
 
 ## Stage 1 — Skeleton and policy engine · complete
 
-### What was built
+`error_policy.json` moved to the repo root (runtime data, not research) and left
+unmodified. `src/policy/engine.py` loads and validates it and answers `resolve` /
+`list_entries` / `coverage_summary`. `src/api/` serves it read-only behind the Razorpay
+error envelope: `errors.py` (envelope + subclasses), `schemas.py` (wire shapes, separate
+from the domain objects), `routes_errors.py` (list, lookup, `/meta/actions`,
+`/meta/coverage`), `main.py` (`create_app`, lifespan, CORS, `/health`, one exception
+handler).
 
-| Module | Responsible for |
-|---|---|
-| `error_policy.json` | Moved from `research/` to the repo root. Runtime data, not reference. Unmodified. |
-| `src/policy/engine.py` | Loads and validates the table; `resolve` / `list_entries` / `coverage_summary`. The eight action classes, the retrying set, the model-eligible set. |
-| `src/api/errors.py` | Razorpay error envelope. `TriageAPIError.to_envelope()` plus subclasses for unknown code, invalid query param, and not found. |
-| `src/api/schemas.py` | Pydantic wire shapes, separate from the engine's domain objects. |
-| `src/api/routes_errors.py` | `GET /v1/errors`, `/{code}`, `/meta/actions`, `/meta/coverage`. Reads the engine off `app.state`. |
-| `src/api/main.py` | `create_app()` factory, lifespan loading one engine, CORS, `/health`, the single exception handler. |
-| `tests/` | `conftest.py`, `test_policy_coverage.py`, `test_api_errors.py`. |
+**Decisions.** The repo had no `.git` — git was walking up to a stray TrustedInstaller-
+owned repo at `C:\`, so `git init` was run inside `TRIAGE/`. Unknown code on
+`GET /v1/errors/{code}` returns 404 `NOT_FOUND_ERROR`, not I-2's 400: browsing the
+taxonomy for a missing row is a different failure from submitting a bad code to a decision
+endpoint. *(Stage 2 wired the 400 into `/decide`; I-2 now says "in the decision path".)*
+Query parameters are validated by hand so every failure leaves through the envelope rather
+than FastAPI's 422 `detail` blob. Collections use `{entity, count, items}` per research/05
+§5.3. Validation is exhaustive — `PolicyLoadError.problems` lists every problem at once.
 
-### Decisions not specified in CLAUDE.md or research/
+**On `error_policy.json`.** Untouched and needs no editing: all 110 rows pass the full
+validation pass and the counts match the brief exactly.
 
-- **The repo had no `.git`.** Git was walking up and finding a stray repo at `C:\` owned
-  by TrustedInstaller, which it refuses to operate on. Ran `git init` inside `TRIAGE/`
-  so `git mv` would work. Files are staged; nothing has been committed.
-- **Unknown code on `GET /v1/errors/{code}` returns 404 `NOT_FOUND_ERROR`**, not I-2's 400
-  `BAD_REQUEST_ERROR`. I-2's 400 governs submitting a code as *input* to a decision
-  endpoint; asking the read-only taxonomy for a row that does not exist is a different
-  failure and should not share a shape with it. `BadErrorCodeError` (400,
-  `unknown_error_code`) is declared in `errors.py` and is currently unused — Stage 2's
-  `POST /v1/recovery/decide` is what raises it. *(Stage 2: it does, and I-2's wording in
-  CLAUDE.md has been tightened to say "in the decision path".)*
-- **Query parameters are taken as `str` and validated by hand**, not typed as enums or
-  `bool` — FastAPI's coercion returns a 422 `detail` blob, breaking envelope consistency.
-  Covers `recoverable` too, which the brief did not call out.
-- **Collections use `{entity, count, items}`**, mirroring research/05 §5.3.
-- **`PolicyEngine.actions_catalogue()` was added** beyond the four named methods:
-  `/meta/actions` needs the JSON's action descriptions, and routes may not read the file.
-- **`list_entries` raises `ValueError` on a bad filter value** even though the route
-  validates first, so a direct caller cannot silently get `[]` back from a typo.
-- **Validation is exhaustive, not fail-fast.** `PolicyLoadError.problems` lists every
-  problem across all 110 rows, so fixing a broken table is one pass, not eleven.
-- **I-4's "scheduling action" is read as the three retrying classes**, matching the
-  wording of the Stage 1 gate. Only `RETRY_SCHEDULED` carries a positive wait in practice.
-- `hatchling` build backend with `packages = ["src"]`, so `uv sync` installs the project.
+**Tests — 75.** The taxonomy is exactly what CLAUDE.md claims — 110 unique codes, all
+eight actions at the exact counts, exactly 27 recoverable and those 27 precisely the three
+retrying classes, with counts hard-coded rather than derived from the file under test.
+I-2: near misses (`INSUFFICIENT_FUNDS`, `insufficient-funds`, `insufficient_fund`, `""`,
+`" "`) all raise, so fuzzy or case-insensitive matching cannot creep in. I-4 and I-1 hold
+over all 110 rows. Six tampered-table tests fail at load; the app refuses to boot broken.
 
-### Deviations from the brief
-
-The 404 decision above is the only one.
-
-### On `error_policy.json`
-
-Left untouched, and it needs no editing: all 110 rows pass the full validation pass, and
-the counts match the brief exactly.
-
-### Tests — 75 passing
-
-They guarantee:
-
-- The taxonomy is exactly what CLAUDE.md claims: 110 unique codes, all resolving, all
-  eight actions present at the exact per-action counts, exactly 27 recoverable, and those
-  27 are precisely the three retrying classes. Counts are hard-coded, not derived from
-  the file under test.
-- **I-2** — unknown codes raise, the exception carries `.code`, and the near misses
-  `""`, `" "`, `INSUFFICIENT_FUNDS`, `insufficient-funds`, `insufficient_fund` all raise.
-  If anyone later adds case folding or fuzzy matching, these fail.
-- **I-4** — positive `min_wait_hours` appears only on retrying actions.
-- **I-1** — `MODEL_ELIGIBLE_ACTIONS` is exactly `{RETRY_SCHEDULED, SWITCH_RAIL}`, is a
-  strict subset of the retrying set, and no unrecoverable code is model-eligible.
-- The validation pass bites: six tampered-table tests each fail at load, and the app
-  **refuses to boot** on a broken table. Copies go to `tmp_path`; the real file is never
-  written to.
-- The 404 and 400 bodies carry the full six-key envelope and share no code or reason.
-
-Verified against a real `uvicorn` process, not only `TestClient`: `/health` reports 110
-codes, `/v1/errors/insufficient_funds` returns `RETRY_SCHEDULED` at 72h, coverage reports
-27 of 110, `/v1/errors/fake` returns 404, `/docs` renders.
-
-### Open questions carried into Stage 2
-
-- **`RETRY_NOW` has no sub-hour representation.** `min_wait_hours` is an integer and is 0
-  for all three `RETRY_NOW` codes. "Re-attempt within seconds" is not expressible in the
-  table, so the Stage 2 scheduler needs its own floor for that class rather than reading
-  one from policy. *(Stage 2: `RETRY_NOW_FLOOR_SECONDS = 30` in the executor.)*
-- **The table is read once at startup and never reloaded**, so editing it needs a
-  restart. **No auth**: research/05 specifies a Bearer key; the brief excluded it.
-- **`BadErrorCodeError` is declared but unused** until `/v1/recovery/decide` exists.
-  *(Stage 2: now raised by `/decide` and case creation.)*
-- **`research/08-ui-spec.md` was not in CLAUDE.md's file map or index.** *(Stage 2: added.)*
-
----
+**Carried into Stage 2 and resolved there:** `RETRY_NOW` has no sub-hour representation
+in the table (`RETRY_NOW_FLOOR_SECONDS = 30` now lives in the executor);
+`BadErrorCodeError` was declared but unused (`/decide` raises it); `research/08-ui-spec.md`
+was missing from CLAUDE.md's file map (added). **Still open:** the table is read once at
+startup so editing it needs a restart, and there is no auth — research/05 specifies a
+Bearer key, the brief excluded it.
 
 ## Stage 2 — Simulator and case engine · complete
 
+| Module | Responsible for |
+|---|---|
+| `src/store/schema.sql` · `db.py` | Five tables, UNIQUE index on `attempts.idempotency_key`, no REAL column. Row dataclasses, derived ids, `set_case_state` as the only path to `cases.state`. |
+| `src/simulator/rails.py` | Rail inventory, `derive_rng`, IST peak window, the downtime feed in Razorpay's schema, `RailHealth` lookup. |
+| `src/simulator/declines.py` | CONFIG — every rate cited or marked as ours — and the causal cascade turning latent state into an error code. |
+| `src/simulator/world.py` | Latent state and the one resolution method. Returns `AttemptOutcome` and nothing else. |
+| `src/simulator/generate.py` | Deterministic population + CLI. Cases written at RECEIVED with `arm` unset. |
+| `src/executor/state.py` · `runner.py` | Nine states with edges as data and audit-before-state; bounds, diagnosis routing, attempts, status polls, `decide`. |
+| `src/api/deps.py` · `routes_cases.py` · `routes_rails.py` | Per-request connection and World; the case lifecycle and the downtime feed. |
+
+**Decisions.** No server clock, so `now` is a required field on `/decide`, `/attempts`,
+`/status-poll` and `/stop`; case creation uses `failed_at`, which for a case being opened
+*is* the current time. `ESCALATED` and `STOPPED` have no edge back to `SCHEDULED`, making
+I-4 structural rather than conventional; `AWAITING_STATUS` keeps its edge, gated on
+`status_resolved_at`, because I-6 requires it. The idempotency check runs **before** the
+bounds check — a client replaying a request must be told it is a duplicate, not told what
+state the original attempt left the case in, or a double-charge attempt hides behind a
+422. A failed attempt re-diagnoses against the new code and updates `cases.error_code`;
+the original stays on `payments.first_error_code` so Stage 3 can segment by the cause that
+opened the case. IDs are derived from stable keys (`blake2b`), never counters or UUIDs,
+which is what makes a run byte-identical and `POST /cases` idempotent on `payment_id`
+without a lookup-then-insert race. `SWITCH_RAIL` targets come from a fixed map, not
+sampled — a rail choice varying per run would break arm parity. Rates were tuned against
+the printed distribution until the stream spread across all eight classes with none above
+35% (~17% first-attempt failure); tuned, not fitted, and every knob sits in one CONFIG
+dict per module.
+
+**Deviations.** `test_no_wall_clock.py` parses the AST rather than grepping — a text grep
+fires on `main.py`'s own docstring, which names `datetime.now()` to say it is banned.
+`world.attempt` also resolves the original payment (`action="INITIAL"`) and status polls
+take the resolution from the caller, both to keep the world at one resolution method.
+
+**Two bugs the tests caught.** `ATTEMPTING -> ESCALATED` was missing, so an attempt
+failing with a nudge-class code wedged in SCHEDULED behind a plausible-looking 409; a
+static test now asserts every diagnosis destination is reachable from `DIAGNOSED` and
+`ATTEMPTING`. `DIAGNOSED -> EXHAUSTED` was missing, so a case whose first wait already
+exceeded `drop_dead_at` could not be closed.
+
+**Tests — 303 (228 new).** I-5: a raw SQL insert with a duplicate key raises
+`IntegrityError` with no application code in the way; over HTTP, 201 then 409 with one
+surviving attempt row. I-6: all five AWAIT_STATUS codes land in `AWAITING_STATUS` with
+`scheduled_at` null, an attempt returns 423 and writes nothing, a resolver that raises on
+call proves the world is never consulted, and after a poll the same attempt returns 201.
+I-7: all three bounds 422, and a refused attempt writes no rows. I-8: a stub resolver
+queries the audit table when called and finds the `ATTEMPTING` row already there. I-12:
+`AttemptOutcome` has four fields, no `__dict__`, no latent-token field, and the decision
+packages are AST-scanned for `src.simulator` imports. I-13: byte-identical database, and
+attempt 3 of one case resolves the same whether or not 50 others ran first.
+
+**Carried into Stage 3 and resolved there:** nudges had no recovery path, there was no
+tick loop, and `cases` lacked the observable customer columns. **Still open:**
+`psp_app_ not_available` has a space in it in `error_policy.json` — left as ground truth
+and not emitted by the simulator, but flag it if the table is ever regenerated.
+
+## Stage 3 — Two arms and the eval harness · complete · **SHIPPABLE**
+
 ### What was built
 
 | Module | Responsible for |
 |---|---|
-| `src/store/schema.sql` | payments, cases, attempts, audit, downtimes. UNIQUE index on `attempts.idempotency_key`. No REAL column anywhere. |
-| `src/store/db.py` | Connection, row dataclasses, derived ids, query helpers. `set_case_state` is the only path to `cases.state`. |
-| `src/simulator/rails.py` | Rail inventory, `derive_rng`, IST peak window, the downtime feed in Razorpay's schema, `RailHealth` point-in-time lookup. |
-| `src/simulator/declines.py` | CONFIG — every rate cited or marked as ours — and the causal cascade turning latent state into an error code. |
-| `src/simulator/world.py` | Latent state and the one resolution method. Returns `AttemptOutcome` and nothing else. |
-| `src/simulator/generate.py` | Deterministic population + CLI. Writes cases at RECEIVED with `arm` unset. |
-| `src/executor/state.py` | Nine states, legal edges as data, audit-before-state `transition`. |
-| `src/executor/runner.py` | Bounds, diagnosis routing, attempt execution, status polls, `decide`. Takes the world as an argument. |
-| `src/api/deps.py` | Per-request connection and World; shared engine and runner. |
-| `src/api/routes_cases.py` | `/decide`, cases, attempts, status-poll, stop. |
-| `src/api/routes_rails.py` | `GET/POST /v1/rails/health`. |
+| `src/arms/base.py` | `Arm` protocol, `ArmDecision`, and `CaseSnapshot` — the curated observable view an arm is given. |
+| `src/arms/control.py` | Fixed +24h × 3 retry for every code. Reads neither the table nor rail health. |
+| `src/arms/baseline.py` | The policy table acted on directly: eight classes, flat `min_wait_hours`, rail-health check before any switch. |
+| `eval/run_arms.py` | Tick loop: generates once, assigns by stable hash, walks the main + trailing window, writes the `runs` row. |
+| `eval/score.py` · `report.py` | I-14/15/16/17, Wilson intervals, two-proportion z, per-code / per-class / per-rail segments, time-to-recovery; renders `eval/report-*.md` with section 6 structural rather than conditional. |
+| `src/api/routes_eval.py` | `POST /v1/simulator/run`, `GET /v1/eval/runs`, `GET /v1/eval/report/{id}`. |
+| prerequisites | `cases` gained `city_tier`, `vpa_handle`, `payer_bank`, `nudge_sent_at`; the world gained a `NUDGE` resolution consuming `nudge_responsiveness_per_hour`. |
+
+### The result
+
+2000 payments over 30 days + 7 trailing, seed 42. Baseline recovers ~2.3× as many
+payments on a sixth of the attempts (74 against 454).
+
+| scenario | baseline | control | gap |
+|---|---|---|---|
+| `normal` | 34.3% (57/166) | 15.1% (28/185) | **+19.2pp**, p < 0.001 |
+| `bank_outage` | 34.3% (57/166) | 15.6% (29/186) | **+18.7pp**, p < 0.001 |
+
+The gap is carried by `AWAIT_STATUS` (91% vs 0% — control has no status poll, so I-6
+blocks it and its cases expire) and `NUDGE_CUSTOMER` (25% vs 6%). On the three terminal
+classes both recover nothing; baseline stops at once, control spends its budget.
+
+**Baseline LOSES on `SWITCH_RAIL`** — 14/17 against control's 13/13 under `normal`, in
+section 6 of both reports and not tuned away. Every simulated outage lasts 45–360 minutes,
+all shorter than control's 24-hour wait, so "wait a day" accidentally dominates the class
+the taxonomy exists to fix, while baseline switches at once onto an alternate rail that
+can fail for unrelated reasons. The real-world case for switching is that the *customer*
+will not wait a day; abandonment is not modelled, so the lever's main benefit is invisible
+here. Fixing that means modelling abandonment, not retuning the arm.
+
+**The two scenarios barely differ.** A 24-hour high-severity window on one PSP handle is
+~3% of the timeline on ~1/6 of one rail — arithmetically a fraction of a point at
+population level, not a null finding about rail health.
 
 ### Decisions not specified in CLAUDE.md or research/
 
-- **No server clock, so `now` is a required request field** on `/decide`, `/attempts`,
-  `/status-poll` and `/stop`. Case creation uses `failed_at` — for a case being opened
-  that *is* the current time, so a second field would be redundant.
-- **`ESCALATED` and `STOPPED` have no edge back to `SCHEDULED`.** This makes I-4
-  structural rather than conventional: the four non-retrying classes landing there cannot
-  reach an attempt however a later caller misuses the runner. `AWAITING_STATUS` keeps its
-  edge to `SCHEDULED`, gated on `status_resolved_at`, because I-6 requires it.
-- **The idempotency check runs before the bounds check.** A client replaying a request
-  must be told it is a duplicate, not told what state the original attempt left the case
-  in. Reporting a replay as a 422 would hide a double-charge attempt.
-- **A failed attempt re-diagnoses against the new code** and updates `cases.error_code`;
-  the original stays on `payments.first_error_code` so Stage 3 can segment by the cause
-  that opened the case — the trail research/05 §5.2's example shows.
-- **After a poll resolves as `failed`, the case is scheduled at the 30s floor**; policy
-  says nothing about post-resolution timing. **`min_interval` is that same floor**, not an
-  hour-scale gate: `min_wait_hours` carries the real spacing.
-- **IDs are derived from stable keys** (`blake2b` of the identifying parts), not counters
-  or UUIDs. That is what makes a run byte-identical and `POST /cases` idempotent on
-  `payment_id` without a lookup-then-insert race.
-- **`SWITCH_RAIL` targets come from a fixed map**, not sampled — a rail choice varying per
-  run would break arm parity. **Missing `Idempotency-Key` returns 400 in the envelope**,
-  not FastAPI's 422 `detail` blob, so this surface has one failure shape.
-- **The World is rebuilt per API request** from the downtimes currently in the store, so
-  an injected outage changes the next attempt immediately. Latent state is derived from
-  `(seed, customer_id)`, never accumulated, so this changes no outcome.
-- **Simulator calibration.** Rates were tuned against the printed distribution until the
-  stream spread across all eight classes with none above 35%: ~17% first-attempt failure,
-  `insufficient_funds` 16% of failures, `SWITCH_RAIL` 9%. Tuned, not fitted — there is no
-  dataset to fit to, and every knob sits in one CONFIG dict per module.
+**Arms decide, the runner executes.** `Runner.apply` takes the action from the arm so
+control can be genuinely naive; the bounds (I-7), the idempotency guard (I-5) and the
+AWAIT_STATUS block (I-6) sit above every arm. Control's pending cases are blocked by the
+executor, not by control knowing better. `ArmDecision.policy_routed` exists because
+without it a control retry failing with `card_expired` would be re-diagnosed into
+`ESCALATED` and control would silently become the baseline while still producing numbers.
+Arms see a `CaseSnapshot`, not the raw row, so an arm never queries the store.
 
-### Deviations from the brief
+Nudges are not attempts: no attempt row, no key, no schedule, and cost reported
+separately (₹0.20 against ₹2.00 per attempt, both assumptions). Nudge conversion is an
+hourly hazard keyed on the hour rather than a total, so a half-hourly loop recovers the
+same customers at the same hour as an hourly one — calibrated to ~25% over 48 hours before
+any arm was run and not retuned since. Run ids are derived from the run's parameters,
+making reruns idempotent; each run owns one SQLite file under `eval/runs/`.
+`runs.created_at` holds the simulated start, the only field that would otherwise differ
+between two identical runs. `POST /v1/simulator/run` runs synchronously and returns 202
+`completed` — a queue would add a dependency for a few seconds' work.
 
-- **`test_no_wall_clock.py` parses the AST instead of grepping.** A text grep fires on
-  `src/api/main.py`'s own docstring, which names `datetime.now()` to say it is banned, and
-  would miss an aliased import. Four tests prove the detector bites and ignores prose.
-- **`world.attempt` also resolves the original payment**, with `action="INITIAL"` and
-  `error_code=None`, rather than the world growing a second entry point. Origination and
-  retry are the same computation at different timestamps, so the interface stays single.
-- **Status polls take the resolution from the caller** rather than asking the world, again
-  keeping the world at exactly one resolution method.
+### Three bugs the first run caught
 
-### Two bugs the tests caught
+- **The simulator let a blind retry fix a wrong PIN.** Control was recovering 9/9
+  `NUDGE_CUSTOMER`, 5/7 `SWITCH_INSTRUMENT` and 12/13 `MERCHANT_ALERT`, directly
+  contradicting CLAUDE.md's own "a retry can never work": the cause model re-rolled every
+  gate per attempt. Fixed by splitting gates into **persistent** (merchant
+  misconfiguration, risk block, customer error — keyed on the payment) and
+  **time-varying** (outage, balance, peak, daily limit — keyed per attempt).
+- **`bank_outage` regenerated the whole downtime timeline** rather than adding one window
+  to `normal`'s, because the scenario sat in the RNG key: the two shared zero downtime ids
+  and were not comparable. It is now exactly `normal` + one event.
+- **`SCHEDULED -> AWAITING_STATUS` was missing**, so a control case re-diagnosed to
+  `payment_pending` mid-flight wedged behind a plausible-looking 409.
 
-- `ATTEMPTING -> ESCALATED` was missing, so any attempt failing with a nudge-class code
-  wedged the case in SCHEDULED behind a plausible-looking 409. Added, plus a static test
-  asserting every diagnosis destination is reachable from `DIAGNOSED` and `ATTEMPTING`.
-- `DIAGNOSED -> EXHAUSTED` was missing, so a case whose first scheduled wait already
-  exceeded `drop_dead_at` could not be closed.
+### Tests — 409 passing (97 new)
 
-### Tests — 303 passing (228 new)
+**I-13** — the assignment hash is stable and order-independent, arms hold disjoint case
+sets, and baseline's outcomes are identical whether control ran first, second or not at
+all. **I-14/15/16/17** — hand-built stores with known answers: four attempts count as one
+payment and attempts are never the denominator; a day-33 recovery counts, a day-40 one
+does not; a losing code reaches `by_error_code`, `losses` and the API payload, and sorting
+by n keeps it at the top; attempt and nudge cost are both reported. **Arms** — control
+gives one answer for all eight classes and raises if handed an engine or health feed it
+touches; baseline names exactly the table's class for all 110 codes and never carries a
+`scheduled_at` on a non-retrying class. **Nudges** — escalate without an attempt row or
+key, recover on landing, exhaust at the window, and a control-only run sends zero.
+**Determinism** — two runs at one seed give identical report JSON *and* markdown.
 
-- **I-5** — the UNIQUE index is asserted to exist and be unique; a raw SQL insert with a
-  duplicate key raises `IntegrityError` with no application code in the way; over HTTP,
-  201 then 409, and only one attempt row survives.
-- **I-6** — all five AWAIT_STATUS codes land in `AWAITING_STATUS` with `scheduled_at`
-  null; an attempt returns 423 and writes nothing; a resolver that raises on call proves
-  the world is never consulted; after a poll, the same attempt returns 201.
-- **I-7** — `max_attempts`, `drop_dead_at` and `min_interval` each 422, through the runner
-  and over HTTP; a refused attempt writes no attempt row and no audit row.
-- **I-8** — a stub resolver queries the audit table at the moment it is called and finds
-  the `ATTEMPTING` row already there. Written from the response, it would find nothing.
-- **I-12** — `AttemptOutcome` has four fields, no `__dict__`, and no field matching any of
-  22 latent tokens; `src/policy/`, `src/executor/` and `src/arms/` are AST-scanned for any
-  import of `src.simulator`.
-- **I-13** — same seed gives a byte-identical database; resolving attempt 3 of one case is
-  identical whether or not 50 other attempts ran first; adding 200 customers does not
-  shift existing latent state. **No wall clock** — every `src/` file is parsed for clock
-  calls.
-- **Simulator** — 2000 payments over 30 days, all eight classes present, no code outside
-  the 110, none above 35%, `card_expired` only on cards, `insufficient_funds` skewed late
-  in the salary cycle.
+### Open questions carried into Stage 4
 
-Verified against a real uvicorn process: 110 codes loaded, 93 downtimes served,
-`Idempotency-Key: same` twice → 201 then 409, an attempt on a `payment_pending` case → 423
-then 201 after the poll, `/decide` on an unknown code → 400, `/docs` renders. Two runs at
-seed 42 give byte-identical databases.
-
-### Open questions carried into Stage 3
-
-- **Nudges have no recovery path.** `nudge_responsiveness` sits in latent state but no
-  Stage 2 code consumes it, because the executor never nudges. Stage 3's arms need one, or
-  `NUDGE_CUSTOMER` — 23 of the 110 codes — can never recover in any arm.
-- **No tick loop yet.** `Runner.run_due` executes what is due at one instant; walking the
-  30-day window is `eval/run_arms.py`'s job.
-- **`cases` does not carry `city_tier`, `vpa_handle` or `payer_bank`.** Observable and
-  available from `world.customer_profile`, but Stage 4's features need them stored.
-- **`psp_app_ not_available` has a space in it** in `error_policy.json`. Left alone as
-  ground truth; the simulator does not emit it. Flag it if the table is regenerated.
-- **The `bank_outage` scenario is untested end to end.** It generates and its
-  high-severity window is asserted, but no arm has run against it.
+- **The simulator and the taxonomy make the same causal claim.** The persistent /
+  time-varying split says a wrong PIN does not fix itself, which is also what
+  `NUDGE_CUSTOMER` asserts. The evaluation therefore tests whether *acting* on that claim
+  beats ignoring it, not whether the claim is true. In every report's caveats, and the
+  most important limitation to say out loud in the video.
+- **Abandonment is not modelled**, which is why `SWITCH_RAIL` loses. The highest-value
+  simulator change left; it would move results, so it belongs before Stage 4 or not at all.
+- **Control recovers 6% of `NUDGE_CUSTOMER`.** The sticky draw is fixed but the threshold
+  it is compared against still moves with the peak and retry multipliers, so a small
+  residual leaks. Real but minor; left rather than special-cased.
+- **Small samples.** ~170 cases per arm, per-code rows routinely n < 10, `RETRY_NOW` n = 1.
+  Stage 4 needs more payments per run, not more days.

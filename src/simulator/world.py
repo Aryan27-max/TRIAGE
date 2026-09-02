@@ -38,6 +38,11 @@ from src.store.db import CaseView
 # The action passed to `attempt` for the original payment, before any case exists.
 INITIAL_ATTEMPT = "INITIAL"
 
+# The action passed to `attempt` to ask whether a nudged customer has acted yet.
+# Same extension pattern as INITIAL_ATTEMPT: the world keeps exactly one resolution
+# method, and the caller says what kind of resolution it wants.
+NUDGE_ATTEMPT = "NUDGE"
+
 LATENT_CONFIG: dict[str, object] = {
     # Monthly income in paise, by city tier. Assumption (ours): sets the scale at
     # which `insufficient_funds` starts to bite for a given ticket size.
@@ -66,9 +71,14 @@ LATENT_CONFIG: dict[str, object] = {
     "device_unbound_share": 0.02,
     # Share prone to breaching velocity caps. Assumption (ours).
     "limit_prone_share": 0.08,
-    # How reliably a customer acts on a nudge. Held for Stage 3's arms; no Stage 2
-    # code path consumes it, because the executor never nudges. (I-4)
-    "nudge_responsiveness": (0.05, 0.65),
+    # Per-HOUR probability that a nudged customer goes and completes the payment
+    # themselves. Assumption (ours): calibrated so the population mean over a 48-hour
+    # response window is ~25% — the band published recovery emails and abandoned-cart
+    # flows typically report. Expressed as an hourly hazard rather than a total so the
+    # answer does not depend on the evaluation's tick size: a draw is keyed on the
+    # hour, so a 30-minute tick and a 1-hour tick recover the same customers at the
+    # same hour. Fixed before any arm was run and not retuned afterwards.
+    "nudge_responsiveness_per_hour": (0.001, 0.011),
     # A rail switch lands on infrastructure the original failure did not touch, so
     # the switched attempt starts from a higher base. Assumption (ours).
     "switch_rail_bonus": 0.12,
@@ -104,7 +114,7 @@ class _CustomerLatent:
     pin_set: bool
     device_bound: bool
     clumsiness: float
-    nudge_responsiveness: float
+    nudge_responsiveness_per_hour: float
     limit_prone: bool
 
 
@@ -215,24 +225,35 @@ class World:
     ) -> AttemptOutcome:
         """Resolve one attempt against latent state. The only way out of the world.
 
-        ``action`` is ``INITIAL_ATTEMPT`` for the original payment, otherwise one of
-        the eight policy classes. ``target_rail`` overrides the case's rail on a
+        ``action`` is ``INITIAL_ATTEMPT`` for the original payment, ``NUDGE_ATTEMPT``
+        to ask whether a nudged customer has acted in this hour, otherwise one of the
+        eight policy classes. ``target_rail`` overrides the case's rail on a
         SWITCH_RAIL; ``None`` means stay where you are.
         """
+        if action == NUDGE_ATTEMPT:
+            return self._nudge(case, at_ts)
+
         rng = derive_rng(self._seed, "attempt", case.id, case.attempt_number)
         method = target_rail or case.method
         if method not in declines.OUTAGE_CODES:
             raise ValueError(f"unknown rail {method!r}")
 
         ctx = self._context(case, method, at_ts, is_retry=case.attempt_number > 1)
-        cause = declines.sample_cause(rng, ctx)
+        # Keyed on the payment, not the attempt, so a persistent blocker persists.
+        # `failed_at` is the payment's own creation time and does not move across the
+        # case's attempts, which is what keeps origination and every later retry on
+        # the same draw.
+        sticky = derive_rng(
+            self._seed, "sticky", case.customer_id, case.merchant_id, case.failed_at
+        )
+        cause = declines.sample_cause(rng, ctx, sticky)
 
         # A rail switch reaches infrastructure the original failure did not touch.
         # Modelled as a second chance, not as immunity: a switch onto a rail that is
         # itself degraded still fails.
         if cause is not None and action == "SWITCH_RAIL" and target_rail:
             if rng.random() < LATENT_CONFIG["switch_rail_bonus"]:  # type: ignore[operator]
-                cause = declines.sample_cause(rng, ctx)
+                cause = declines.sample_cause(rng, ctx, sticky)
 
         if cause is None:
             return AttemptOutcome(
@@ -246,6 +267,31 @@ class World:
             error_code=cause.code,
             error_source=cause.source,
             latency_ms=declines.latency_ms(rng, False),
+        )
+
+    def _nudge(self, case: CaseView, at_ts: int) -> AttemptOutcome:
+        """Has this customer acted on the nudge during this hour?
+
+        One draw per hour of the response window, keyed on the hour rather than the
+        timestamp, so the result does not move with the evaluation's tick size. A
+        success means the customer went and paid on their own: nothing here charges
+        anything, and the executor writes no attempt row for it.
+        """
+        rng = derive_rng(self._seed, "nudge", case.id, at_ts // 3600)
+        latent = self._customer(case.customer_id)
+        if rng.random() < latent.nudge_responsiveness_per_hour:
+            return AttemptOutcome(
+                success=True,
+                error_code=None,
+                error_source=None,
+                latency_ms=declines.latency_ms(rng, True),
+            )
+        # Still waiting. The original blocker has not been cleared.
+        return AttemptOutcome(
+            success=False,
+            error_code=case.error_code,
+            error_source="customer",
+            latency_ms=0,
         )
 
     # -- latent state ----------------------------------------------------------
@@ -333,7 +379,7 @@ class World:
         burn_lo, burn_hi = LATENT_CONFIG["burn_rate"]  # type: ignore[misc]
         card_lo, card_hi = LATENT_CONFIG["card_valid_days"]  # type: ignore[misc]
         clumsy_lo, clumsy_hi = LATENT_CONFIG["clumsiness"]  # type: ignore[misc]
-        nudge_lo, nudge_hi = LATENT_CONFIG["nudge_responsiveness"]  # type: ignore[misc]
+        nudge_lo, nudge_hi = LATENT_CONFIG["nudge_responsiveness_per_hour"]  # type: ignore[misc]
 
         latent = _CustomerLatent(
             city_tier=tier,
@@ -347,7 +393,7 @@ class World:
             pin_set=rng.random() >= LATENT_CONFIG["pin_not_set_share"],  # type: ignore[operator]
             device_bound=rng.random() >= LATENT_CONFIG["device_unbound_share"],  # type: ignore[operator]
             clumsiness=rng.uniform(clumsy_lo, clumsy_hi),
-            nudge_responsiveness=rng.uniform(nudge_lo, nudge_hi),
+            nudge_responsiveness_per_hour=rng.uniform(nudge_lo, nudge_hi),
             limit_prone=rng.random() < LATENT_CONFIG["limit_prone_share"],  # type: ignore[operator]
         )
         self._customers[customer_id] = latent

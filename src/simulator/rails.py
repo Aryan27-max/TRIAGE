@@ -74,11 +74,16 @@ CONFIG: dict[str, object] = {
     # simultaneous load. Modelled as 19:00-22:00 IST.
     "peak_window_ist": (19, 22),
     # `bank_outage`: one high-severity window on OUTAGE_HANDLE, starting on this day
-    # of the run at this IST hour, for this many hours. Placed inside the evening peak
+    # of the run at this IST hour, for this many hours. Starts inside the evening peak
     # so the scenario stacks the two effects the demo is about.
+    #
+    # 24 hours, not a handful: major Indian bank UPI outages have run a full day, and
+    # a shorter window is arithmetically invisible in a 30-day population. Even at a
+    # day, one PSP out of six on one rail is a small share of the month — the report
+    # says so rather than implying the scenario moves the blended number.
     "bank_outage_day": 12,
     "bank_outage_start_hour_ist": 19,
-    "bank_outage_hours": 6,
+    "bank_outage_hours": 24,
 }
 
 
@@ -190,7 +195,11 @@ def generate_downtimes(
     durations: dict[str, tuple[int, int]] = CONFIG["duration_minutes"]  # type: ignore[assignment]
 
     for method in METHODS:
-        rng = derive_rng(seed, "rails", scenario, method)
+        # Deliberately NOT keyed on the scenario. `bank_outage` must be `normal` plus
+        # one high-severity window, not a different timeline that happens to contain
+        # one: if the background events differed too, comparing the two scenarios
+        # would say nothing about the outage.
+        rng = derive_rng(seed, "rails", method)
         expected = rates[method] * days / 30.0
         count = _poisson(rng, expected)
         candidates = _instruments_for(method)
@@ -206,7 +215,7 @@ def generate_downtimes(
             end = begin + rng.randint(low, high) * 60
             events.append(
                 Downtime(
-                    id=stable_id("down_", seed, scenario, method, instrument, begin, index),
+                    id=stable_id("down_", seed, method, instrument, begin, index),
                     method=method,
                     scope=scope,
                     instrument=instrument,

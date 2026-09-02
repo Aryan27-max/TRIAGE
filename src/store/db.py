@@ -87,12 +87,16 @@ class Case:
     error_code: str
     error_source: str | None
     failed_at: int
+    city_tier: int | None
+    vpa_handle: str | None
+    payer_bank: str | None
     state: str
     arm: str | None
     max_attempts: int
     drop_dead_at: int
     next_attempt_at: int | None
     status_resolved_at: int | None
+    nudge_sent_at: int | None
     recovered_at: int | None
     recovered_amount_paise: int | None
     created_at: int
@@ -189,7 +193,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
 def reset_db(conn: sqlite3.Connection) -> None:
     """Drop every table and rebuild. Used by the simulator before a fresh run."""
-    for table in ("audit", "attempts", "downtimes", "cases", "payments"):
+    for table in ("audit", "attempts", "downtimes", "cases", "payments", "runs"):
         conn.execute(f"DROP TABLE IF EXISTS {table}")
     conn.commit()
     init_db(conn)
@@ -241,9 +245,9 @@ def count_payments(conn: sqlite3.Connection) -> int:
 
 _CASE_COLUMNS = (
     "id, payment_id, customer_id, merchant_id, method, rail, amount_paise, "
-    "error_code, error_source, failed_at, state, arm, max_attempts, drop_dead_at, "
-    "next_attempt_at, status_resolved_at, recovered_at, recovered_amount_paise, "
-    "created_at"
+    "error_code, error_source, failed_at, city_tier, vpa_handle, payer_bank, "
+    "state, arm, max_attempts, drop_dead_at, next_attempt_at, status_resolved_at, "
+    "nudge_sent_at, recovered_at, recovered_amount_paise, created_at"
 )
 
 
@@ -254,7 +258,7 @@ def _to_case(row: sqlite3.Row) -> Case:
 def insert_case(conn: sqlite3.Connection, case: Case) -> Case:
     conn.execute(
         f"INSERT INTO cases ({_CASE_COLUMNS}) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             case.id,
             case.payment_id,
@@ -266,12 +270,16 @@ def insert_case(conn: sqlite3.Connection, case: Case) -> Case:
             case.error_code,
             case.error_source,
             case.failed_at,
+            case.city_tier,
+            case.vpa_handle,
+            case.payer_bank,
             case.state,
             case.arm,
             case.max_attempts,
             case.drop_dead_at,
             case.next_attempt_at,
             case.status_resolved_at,
+            case.nudge_sent_at,
             case.recovered_at,
             case.recovered_amount_paise,
             case.created_at,
@@ -528,6 +536,118 @@ def list_downtimes(
         )
         for row in rows
     ]
+
+
+TERMINAL_SQL = "('RECOVERED', 'EXHAUSTED', 'STOPPED')"
+
+
+def due_for_tick(conn: sqlite3.Connection, now: int, arm: str | None = None) -> list[Case]:
+    """Non-terminal cases that need a decision at this tick.
+
+    Filtered in SQL rather than in Python: a 37-day window at hourly ticks asks this
+    question ~900 times, and most cases are simply waiting on a scheduled time.
+
+    A case needs attention when it is newly received, its scheduled time has arrived,
+    it is sitting in a state that is polled every tick (a nudge awaiting a response,
+    an unresolved status), or its drop-dead time has passed.
+    """
+    clauses = [
+        "state NOT IN " + TERMINAL_SQL,
+        "("
+        "state = 'RECEIVED'"
+        " OR (next_attempt_at IS NOT NULL AND next_attempt_at <= ?)"
+        " OR state IN ('ESCALATED', 'AWAITING_STATUS')"
+        " OR drop_dead_at <= ?"
+        ")",
+    ]
+    params: list[Any] = [now, now]
+    if arm is not None:
+        clauses.append("arm = ?")
+        params.append(arm)
+    rows = conn.execute(
+        f"SELECT * FROM cases WHERE {' AND '.join(clauses)} ORDER BY id", params
+    ).fetchall()
+    return [_to_case(row) for row in rows]
+
+
+def open_cases(conn: sqlite3.Connection, arm: str | None = None) -> list[Case]:
+    """Every case not yet in a terminal state."""
+    sql = f"SELECT * FROM cases WHERE state NOT IN {TERMINAL_SQL}"
+    params: list[Any] = []
+    if arm is not None:
+        sql += " AND arm = ?"
+        params.append(arm)
+    return [_to_case(r) for r in conn.execute(sql + " ORDER BY id", params).fetchall()]
+
+
+def assign_arms(conn: sqlite3.Connection, arms: Sequence[str]) -> dict[str, int]:
+    """Partition the generated cases across arms by a stable hash of case_id.
+
+    Assignment, not regeneration: every arm faces the same world, and which arm a
+    case lands in does not depend on the order arms are listed or run. (I-13)
+    """
+    if not arms:
+        raise StoreError("at least one arm is required")
+    ordered = sorted(arms)
+    counts = dict.fromkeys(ordered, 0)
+    for case in conn.execute("SELECT id FROM cases ORDER BY id").fetchall():
+        bucket = arm_for(case["id"], ordered)
+        conn.execute("UPDATE cases SET arm = ? WHERE id = ?", (bucket, case["id"]))
+        counts[bucket] += 1
+    return counts
+
+
+def arm_for(case_id: str, arms: Sequence[str]) -> str:
+    """Which arm a case belongs to. Pure, stable, order-independent."""
+    ordered = sorted(arms)
+    digest = hashlib.blake2b(case_id.encode("utf-8"), digest_size=8).digest()
+    return ordered[int.from_bytes(digest, "big") % len(ordered)]
+
+
+# -- runs ---------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class Run:
+    run_id: str
+    seed: int
+    n_payments: int
+    days: int
+    scenario: str
+    trailing_days: int
+    tick_seconds: int
+    arms: str
+    start_ts: int
+    created_at: int
+    git_sha: str | None
+
+    @property
+    def arm_names(self) -> list[str]:
+        return [a for a in self.arms.split(",") if a]
+
+
+def insert_run(conn: sqlite3.Connection, run: Run) -> Run:
+    conn.execute(
+        "INSERT OR REPLACE INTO runs (run_id, seed, n_payments, days, scenario, "
+        "trailing_days, tick_seconds, arms, start_ts, created_at, git_sha) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            run.run_id, run.seed, run.n_payments, run.days, run.scenario,
+            run.trailing_days, run.tick_seconds, run.arms, run.start_ts,
+            run.created_at, run.git_sha,
+        ),
+    )
+    return run
+
+
+def get_run(conn: sqlite3.Connection, run_id: str) -> Run | None:
+    row = conn.execute("SELECT * FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    return Run(**dict(row)) if row else None
+
+
+def list_runs(conn: sqlite3.Connection) -> list[Run]:
+    rows = conn.execute("SELECT * FROM runs ORDER BY run_id").fetchall()
+    return [Run(**dict(r)) for r in rows]
 
 
 def fetch_all(conn: sqlite3.Connection, sql: str, params: Sequence[Any] = ()) -> list[dict[str, Any]]:

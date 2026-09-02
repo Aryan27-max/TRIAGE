@@ -200,12 +200,18 @@ def generate(
                     error_code=outcome.error_code,
                     error_source=outcome.error_source,
                     failed_at=created_at,
+                    # Observable: a real gateway holds all three on the payment.
+                    # Stored now so Stage 4's features need no schema migration.
+                    city_tier=int(profile["city_tier"]),  # type: ignore[arg-type]
+                    vpa_handle=str(profile["vpa_handle"]),
+                    payer_bank=str(profile["payer_bank"]),
                     state=RECEIVED,
                     arm=None,  # Stage 3 assigns. Never regenerated per arm. (I-13)
                     max_attempts=DEFAULT_MAX_ATTEMPTS,
                     drop_dead_at=created_at + DEFAULT_DROP_DEAD_DAYS * DAY,
                     next_attempt_at=None,
                     status_resolved_at=None,
+                    nudge_sent_at=None,
                     recovered_at=None,
                     recovered_amount_paise=None,
                     created_at=created_at,

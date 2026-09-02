@@ -29,7 +29,7 @@ Built for the Razorpay Buildathon, Track 03 — AI Revenue Recovery. Deadline: *
 | 0 | Research and taxonomy | **Done** — `research/`, `error_policy.json` |
 | 1 | Skeleton + policy engine | **Done** — `src/policy/`, `src/api/`, 75 tests green |
 | 2 | Simulator + case engine | **Done** — `src/simulator/`, `src/store/`, `src/executor/`, 303 tests green |
-| 3 | Two arms + eval harness | Not started — **shippable checkpoint** |
+| 3 | Two arms + eval harness | **Done — SHIPPABLE CHECKPOINT REACHED.** 409 tests green, both scenario reports generated |
 | 4 | Features + LightGBM | Not started |
 | 5 | Dashboard + README + video | Not started |
 
@@ -99,7 +99,21 @@ reverse.
 **I-4 — `SWITCH_INSTRUMENT`, `NUDGE_CUSTOMER`, `AWAIT_STATUS`, `STOP` and
 `MERCHANT_ALERT` never schedule a retry.**
 `decision.scheduled_at` must be `None` for all five.
-→ `tests/test_no_retry_classes.py`
+
+**A nudge that lands is not a retry.** `NUDGE_CUSTOMER` reaches `RECOVERED` through
+`ESCALATED`, and that does not violate I-4. I-4 forbids *scheduling a retry* on these
+classes; a nudge that lands means the customer went and paid themselves — no attempt is
+scheduled, no idempotency key is consumed, no attempt row is written, and this system
+charges nothing. The structural guarantee is unchanged and is the thing to check:
+`ESCALATED` and `STOPPED` have no edge to `SCHEDULED` or `ATTEMPTING`, so a non-retrying
+class cannot reach an attempt however a caller misuses the runner. Settled in Stage 3 —
+do not re-argue it.
+
+**Control is exempt, by construction.** The control arm retries every code on a fixed
+schedule precisely because it does not read the table — that is the behaviour being
+measured against. I-4 binds the policy-driven path: `Runner.decide()`, the baseline arm,
+and Stage 4's treatment arm.
+→ `tests/test_arms.py`, `tests/test_nudge.py`, `tests/test_await_status.py`
 
 ### Money safety
 
@@ -204,7 +218,7 @@ TRIAGE/
 │   │   ├── routes_errors.py        S1 · GET /v1/errors, /v1/errors/{code}
 │   │   ├── routes_cases.py         S2 · cases, decide, attempts, status-poll
 │   │   ├── routes_rails.py         S2 · rail health
-│   │   └── routes_eval.py          S3 · simulator run, eval report
+│   │   └── routes_eval.py          S3 · simulator run, runs list, eval report
 │   ├── simulator/
 │   │   ├── generate.py             S2 · payment stream
 │   │   ├── declines.py             S2 · error code sampler
@@ -217,7 +231,8 @@ TRIAGE/
 │   │   ├── state.py                S2 · state machine
 │   │   └── runner.py               S2 · bounded executor, idempotency
 │   ├── arms/
-│   │   ├── control.py              S3 · fixed retry +24h ×3
+│   │   ├── base.py                 S3 · Arm protocol, CaseSnapshot, ArmDecision
+│   │   ├── control.py              S3 · fixed retry +24h ×3, ignores the table
 │   │   ├── baseline.py             S3 · policy table only
 │   │   └── treatment.py            S4 · policy + model
 │   ├── features/
@@ -229,9 +244,12 @@ TRIAGE/
 │       └── llm.py                  S5 · optional, text only
 │
 ├── eval/
-│   ├── run_arms.py                 S3 · orchestrates arms
-│   ├── score.py                    S3 · dedup, trailing window, per-code
-│   └── report.md                   S3 · generated output
+│   ├── run_arms.py                 S3 · tick loop, arm assignment
+│   ├── score.py                    S3 · dedup, trailing window, per-code, CIs
+│   ├── report.py                   S3 · renders the markdown
+│   ├── report-normal.md            S3 · generated — do not hand-edit
+│   ├── report-bank-outage.md       S3 · generated — do not hand-edit
+│   └── runs/                       S3 · one SQLite file per run (gitignored)
 │
 ├── tests/                          see invariants above
 │
@@ -300,11 +318,16 @@ produce byte-identical output. Without this, arm comparison is meaningless.
 - **Done when:** 2000 payments over 30 days; duplicate → `409`; pending → `423`
 - See `SUMMARY.md` for decisions and carried-over gaps.
 
-### Stage 3 — Two arms + eval · ~3h · **SHIPPABLE**
-- [ ] `control.py`, `baseline.py`
-- [ ] `score.py` implementing I-14, I-15, I-16, I-17
-- [ ] `eval/report.md` generated
+### Stage 3 — Two arms + eval · ~3h · **SHIPPABLE — REACHED**
+- [x] `base.py`, `control.py`, `baseline.py`
+- [x] `run_arms.py` tick loop; population generated once, split by assignment (I-13)
+- [x] `score.py` implementing I-14, I-15, I-16, I-17, Wilson CIs, two-proportion z
+- [x] `eval/report-normal.md` and `eval/report-bank-outage.md` generated
+- [x] `routes_eval.py` — `/v1/simulator/run`, `/v1/eval/runs`, `/v1/eval/report/{id}`
 - **Done when:** baseline-vs-control uplift with a per-code table including negative rows
+- **Result:** baseline +19.2pp over control (34.3% vs 15.1%, p < 0.001) on a sixth of
+  the attempts. Baseline **loses** on `SWITCH_RAIL` — published, diagnosed in SUMMARY.md.
+- See `SUMMARY.md` for decisions and carried-over gaps.
 
 ### Stage 4 — Features + model · ~4h · timeboxed
 - [ ] `features/build.py` with required `as_of`

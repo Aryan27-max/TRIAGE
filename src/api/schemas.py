@@ -290,3 +290,49 @@ class DowntimeCollection(BaseModel):
     entity: str = "collection"
     count: int
     items: list[DowntimeRecord]
+
+
+# -- Stage 3: simulation and evaluation ---------------------------------------
+
+
+class SimulatorRunRequest(BaseModel):
+    """Run the arms over one simulated window. Executes synchronously."""
+
+    n_payments: int = Field(2000, ge=1, description="Payments to generate")
+    days: int = Field(30, ge=1, description="Length of the main window")
+    seed: int = Field(42, description="Every draw in the run derives from this")
+    scenario: str = Field("normal", description="normal | bank_outage")
+    arms: list[str] = Field(default_factory=lambda: ["control", "baseline"])
+    trailing_days: int = Field(
+        7, ge=0, description="Executed as well as scored — a day-28 retry may land on day 33 (I-15)"
+    )
+    tick_seconds: int = Field(3600, ge=1, description="Simulated clock step")
+
+
+class RunAccepted(BaseModel):
+    run_id: str
+    status: str = "completed"
+    assignment: dict[str, int] = Field(
+        default_factory=dict, description="Cases per arm, split by a stable hash (I-13)"
+    )
+    ticks: int = 0
+
+
+class RunSummary(BaseModel):
+    run_id: str
+    entity: str = "eval.run"
+    seed: int
+    n_payments: int
+    days: int
+    scenario: str
+    trailing_days: int
+    tick_seconds: int
+    arms: list[str]
+    start_ts: int
+    git_sha: str | None = None
+
+
+class RunCollection(BaseModel):
+    entity: str = "collection"
+    count: int
+    items: list[RunSummary]

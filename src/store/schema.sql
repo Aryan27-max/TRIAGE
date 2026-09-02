@@ -41,12 +41,19 @@ CREATE TABLE IF NOT EXISTS cases (
     error_code              TEXT    NOT NULL,
     error_source            TEXT,
     failed_at               INTEGER NOT NULL,
+    -- Observable customer attributes. A real gateway holds all three on the payment
+    -- (research/05 §5.1 puts them on the decide request), so carrying them here is not
+    -- an I-12 leak. Stored at generation so Stage 4's features need no migration.
+    city_tier               INTEGER,
+    vpa_handle              TEXT,
+    payer_bank              TEXT,
     state                   TEXT    NOT NULL,
     arm                     TEXT,
     max_attempts            INTEGER NOT NULL CHECK (max_attempts > 0),
     drop_dead_at            INTEGER NOT NULL,
     next_attempt_at         INTEGER,
     status_resolved_at      INTEGER,
+    nudge_sent_at           INTEGER,
     recovered_at            INTEGER,
     recovered_amount_paise  INTEGER,
     created_at              INTEGER NOT NULL
@@ -107,3 +114,20 @@ CREATE TABLE IF NOT EXISTS downtimes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_downtimes_window ON downtimes (method, begin, end);
+
+-- One row per evaluation run. `created_at` is the run's *simulated* window start, not
+-- a wall-clock stamp: the run_id is derived from the parameters, so an identical run
+-- reproduces byte for byte and a real timestamp would be the only thing that differed.
+CREATE TABLE IF NOT EXISTS runs (
+    run_id         TEXT    PRIMARY KEY,
+    seed           INTEGER NOT NULL,
+    n_payments     INTEGER NOT NULL,
+    days           INTEGER NOT NULL,
+    scenario       TEXT    NOT NULL,
+    trailing_days  INTEGER NOT NULL,
+    tick_seconds   INTEGER NOT NULL,
+    arms           TEXT    NOT NULL,
+    start_ts       INTEGER NOT NULL,
+    created_at     INTEGER NOT NULL,
+    git_sha        TEXT
+);
