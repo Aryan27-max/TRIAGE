@@ -1,0 +1,69 @@
+{
+  "arm": "baseline",
+  "dropped_straddling_attempts": 375,
+  "feature_names": [
+    "payer_bank",
+    "vpa_handle",
+    "city_tier",
+    "cust_hist_success_rate",
+    "cust_prior_failures_30d",
+    "cust_prior_recovery_lag_h",
+    "mcc",
+    "ticket_size_band",
+    "is_recurring",
+    "error_code",
+    "error_source",
+    "action_class",
+    "method",
+    "attempt_number",
+    "hours_since_first_failure",
+    "log_amount",
+    "hour_sin",
+    "hour_cos",
+    "dow_sin",
+    "dow_cos",
+    "day_of_month",
+    "days_to_salary_date",
+    "is_peak_window",
+    "is_month_end",
+    "rail_downtime_active",
+    "rail_downtime_severity",
+    "rail_success_rate_1h",
+    "alt_rail_success_rate_1h",
+    "candidate_action",
+    "candidate_target_rail",
+    "candidate_delay_hours"
+  ],
+  "first_ts": 1735742934,
+  "last_ts": 1738281465,
+  "n_positive": 709,
+  "n_rows": 1784,
+  "positive_rate": 0.3974,
+  "run_id": "run_1NXsztG1",
+  "scenario": "normal",
+  "seed": 7,
+  "split_days": {
+    "test": [
+      27,
+      30
+    ],
+    "train": [
+      1,
+      21
+    ],
+    "valid": [
+      22,
+      26
+    ]
+  },
+  "split_positives": {
+    "test": 104,
+    "train": 536,
+    "valid": 69
+  },
+  "split_rows": {
+    "test": 421,
+    "train": 1044,
+    "valid": 319
+  }
+}

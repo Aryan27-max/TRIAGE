@@ -31,6 +31,7 @@ from pathlib import Path
 from src.arms.base import Arm, ArmDecision, CaseSnapshot
 from src.arms.baseline import BaselineArm
 from src.arms.control import ControlArm
+from src.arms.treatment import TreatmentArm
 from src.executor.runner import Runner
 from src.executor.state import TERMINAL_STATES
 from src.policy.engine import PolicyEngine
@@ -49,7 +50,13 @@ RUNS_DIR = Path(__file__).resolve().parent / "runs"
 ARM_FACTORIES = {
     "control": ControlArm,
     "baseline": BaselineArm,
+    "treatment": TreatmentArm,
 }
+
+# Arms that need the trained model. Asking for one without `eval/model/model.txt` on
+# disk raises rather than quietly running a slightly different baseline under the
+# treatment label.
+MODEL_ARMS = frozenset({"treatment"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,15 +66,27 @@ class RunResult:
     assignment: dict[str, int]
     ticks: int
     decisions: int
+    negative_ev_stops: int = 0
 
 
-def build_arms(names: list[str]) -> dict[str, Arm]:
+def build_arms(names: list[str], *, model_dir: Path | str | None = None) -> dict[str, Arm]:
     unknown = [n for n in names if n not in ARM_FACTORIES]
     if unknown:
         raise ValueError(
             f"unknown arm(s) {unknown}; available: {sorted(ARM_FACTORIES)}"
         )
-    return {name: ARM_FACTORIES[name]() for name in names}
+    built: dict[str, Arm] = {}
+    scorer = None
+    for name in names:
+        if name in MODEL_ARMS:
+            if scorer is None:
+                from src.model.score import Scorer
+
+                scorer = Scorer(model_dir) if model_dir else Scorer()
+            built[name] = ARM_FACTORIES[name](scorer)
+        else:
+            built[name] = ARM_FACTORIES[name]()
+    return built
 
 
 def run_id_for(
@@ -114,7 +133,7 @@ def git_sha() -> str | None:
 def run(
     *,
     seed: int = 42,
-    n_payments: int = 2000,
+    n_payments: int = 8000,
     days: int = 30,
     scenario: str = "normal",
     arms: list[str] | None = None,
@@ -123,10 +142,11 @@ def run(
     start_ts: int = DEFAULT_START_TS,
     db_path: Path | str | None = None,
     engine: PolicyEngine | None = None,
+    model_dir: Path | str | None = None,
 ) -> RunResult:
     """Generate, assign, and walk the window. Returns the run's id and database."""
     arm_names = sorted(arms or ["control", "baseline"])
-    arm_impls = build_arms(arm_names)
+    arm_impls = build_arms(arm_names, model_dir=model_dir)
     engine = engine or PolicyEngine().load()
 
     run_id = run_id_for(
@@ -167,6 +187,12 @@ def run(
         )
         runner = Runner(engine)
 
+        # The treatment arm builds point-in-time features and so needs the same
+        # connection the runner writes through. Arms do not open their own.
+        for arm in arm_impls.values():
+            if hasattr(arm, "bind"):
+                arm.bind(conn)
+
         db.insert_run(
             conn,
             db.Run(
@@ -206,6 +232,9 @@ def run(
         assignment=assignment,
         ticks=ticks,
         decisions=decisions,
+        negative_ev_stops=sum(
+            getattr(arm, "negative_ev_stops", 0) for arm in arm_impls.values()
+        ),
     )
 
 
@@ -245,10 +274,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Run the arms over one simulated window and write the report.",
     )
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--n", type=int, default=2000, dest="n_payments")
+    parser.add_argument("--n", type=int, default=8000, dest="n_payments")
     parser.add_argument("--days", type=int, default=30)
     parser.add_argument("--scenario", choices=("normal", "bank_outage"), default="normal")
     parser.add_argument("--arms", default="control,baseline")
+    parser.add_argument("--model-dir", type=Path, default=None)
     parser.add_argument("--trailing-days", type=int, default=DEFAULT_TRAILING_DAYS)
     parser.add_argument("--tick-seconds", type=int, default=DEFAULT_TICK_SECONDS)
     parser.add_argument("--db", type=Path, default=None)
@@ -266,6 +296,7 @@ def main(argv: list[str] | None = None) -> int:
         trailing_days=args.trailing_days,
         tick_seconds=args.tick_seconds,
         db_path=args.db,
+        model_dir=args.model_dir,
     )
 
     report_path = args.report or (
@@ -293,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
             f"({gap.relative:+.1%}), p = {gap.p_value:.3f}"
         )
     print(f"  losing segments: {len(card.losses)}")
+    if result.negative_ev_stops:
+        print(f"  negative-EV stops: {result.negative_ev_stops}")
 
     if args.json:
         from eval.score import to_api_shape

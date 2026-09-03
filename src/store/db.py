@@ -90,6 +90,7 @@ class Case:
     city_tier: int | None
     vpa_handle: str | None
     payer_bank: str | None
+    mcc: str | None
     state: str
     arm: str | None
     max_attempts: int
@@ -245,7 +246,7 @@ def count_payments(conn: sqlite3.Connection) -> int:
 
 _CASE_COLUMNS = (
     "id, payment_id, customer_id, merchant_id, method, rail, amount_paise, "
-    "error_code, error_source, failed_at, city_tier, vpa_handle, payer_bank, "
+    "error_code, error_source, failed_at, city_tier, vpa_handle, payer_bank, mcc, "
     "state, arm, max_attempts, drop_dead_at, next_attempt_at, status_resolved_at, "
     "nudge_sent_at, recovered_at, recovered_amount_paise, created_at"
 )
@@ -258,7 +259,7 @@ def _to_case(row: sqlite3.Row) -> Case:
 def insert_case(conn: sqlite3.Connection, case: Case) -> Case:
     conn.execute(
         f"INSERT INTO cases ({_CASE_COLUMNS}) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             case.id,
             case.payment_id,
@@ -273,6 +274,7 @@ def insert_case(conn: sqlite3.Connection, case: Case) -> Case:
             case.city_tier,
             case.vpa_handle,
             case.payer_bank,
+            case.mcc,
             case.state,
             case.arm,
             case.max_attempts,

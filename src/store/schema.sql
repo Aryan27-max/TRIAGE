@@ -47,6 +47,7 @@ CREATE TABLE IF NOT EXISTS cases (
     city_tier               INTEGER,
     vpa_handle              TEXT,
     payer_bank              TEXT,
+    mcc                     TEXT,
     state                   TEXT    NOT NULL,
     arm                     TEXT,
     max_attempts            INTEGER NOT NULL CHECK (max_attempts > 0),

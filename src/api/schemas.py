@@ -298,7 +298,7 @@ class DowntimeCollection(BaseModel):
 class SimulatorRunRequest(BaseModel):
     """Run the arms over one simulated window. Executes synchronously."""
 
-    n_payments: int = Field(2000, ge=1, description="Payments to generate")
+    n_payments: int = Field(8000, ge=1, description="Payments to generate")
     days: int = Field(30, ge=1, description="Length of the main window")
     seed: int = Field(42, description="Every draw in the run derives from this")
     scenario: str = Field("normal", description="normal | bank_outage")

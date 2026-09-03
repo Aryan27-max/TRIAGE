@@ -30,7 +30,7 @@ Built for the Razorpay Buildathon, Track 03 — AI Revenue Recovery. Deadline: *
 | 1 | Skeleton + policy engine | **Done** — `src/policy/`, `src/api/`, 75 tests green |
 | 2 | Simulator + case engine | **Done** — `src/simulator/`, `src/store/`, `src/executor/`, 303 tests green |
 | 3 | Two arms + eval harness | **Done — SHIPPABLE CHECKPOINT REACHED.** 409 tests green, both scenario reports generated |
-| 4 | Features + LightGBM | Not started |
+| 4 | Features + LightGBM | **Done** — `src/features/`, `src/model/`, `arms/treatment.py`, 543 tests green. Model adds **+0.2pp, p = 0.94** — an honest null |
 | 5 | Dashboard + README + video | Not started |
 
 Update this table as stages complete. It is the fastest way to re-orient at the start of
@@ -236,9 +236,11 @@ TRIAGE/
 │   │   ├── baseline.py             S3 · policy table only
 │   │   └── treatment.py            S4 · policy + model
 │   ├── features/
-│   │   └── build.py                S4 · 26 features, as_of enforced
+│   │   └── build.py                S4 · 31 features, as_of required (no default)
 │   ├── model/
-│   │   └── train.py                S4 · LightGBM
+│   │   ├── dataset.py              S4 · one row per attempt, temporal split
+│   │   ├── train.py                S4 · LightGBM
+│   │   └── score.py                S4 · raises on drift or a missing model
 │   └── explain/
 │       ├── templates.py            S5 · templated explanations (default)
 │       └── llm.py                  S5 · optional, text only
@@ -329,14 +331,19 @@ produce byte-identical output. Without this, arm comparison is meaningless.
   the attempts. Baseline **loses** on `SWITCH_RAIL` — published, diagnosed in SUMMARY.md.
 - See `SUMMARY.md` for decisions and carried-over gaps.
 
-### Stage 4 — Features + model · ~4h · timeboxed
-- [ ] `features/build.py` with required `as_of`
-- [ ] `tests/test_no_leakage.py` — must fail if a future event is referenced
-- [ ] LightGBM, temporal split, early stopping
-- [ ] `treatment.py`, three-arm report
+### Stage 4 — Features + model · ~4h · timeboxed · **DONE**
+- [x] `features/build.py` with required `as_of` — 31 features
+- [x] `tests/test_no_leakage.py` — future-invariance, boundary, signature, isolation
+- [x] LightGBM, temporal split, early stopping
+- [x] `treatment.py`, three-arm report at 8000 payments
 - **Done when:** leakage test passes, both gaps reported separately
+- See `SUMMARY.md` for the null result and its diagnosis.
 - **If the model does not beat baseline, report that and move on.** An honest null result
   is a stronger submission than a fabricated win.
+- **Result:** it did not. Taxonomy +21.2pp (p<0.001); model +0.2pp (p=0.94), and −4.5pp
+  on the model-eligible surface alone. Diagnosed in SUMMARY.md: the training data is
+  on-policy, so `candidate_delay_hours` carries zero gain and the model cannot rank
+  times it never saw tried.
 
 ### Stage 5 — Interface + submission · ~4h
 - [ ] Dashboard: triage board, case list, case detail with audit trail, eval report. **Four screens, hard limit.**

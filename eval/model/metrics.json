@@ -1,0 +1,121 @@
+{
+  "best_iteration": 61,
+  "calibration_test": [
+    {
+      "decile": 1,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0325
+    },
+    {
+      "decile": 2,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0367
+    },
+    {
+      "decile": 3,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0406
+    },
+    {
+      "decile": 4,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0437
+    },
+    {
+      "decile": 5,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0478
+    },
+    {
+      "decile": 6,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0557
+    },
+    {
+      "decile": 7,
+      "n": 42,
+      "observed_rate": 0.0,
+      "predicted_mean": 0.0808
+    },
+    {
+      "decile": 8,
+      "n": 42,
+      "observed_rate": 0.5476,
+      "predicted_mean": 0.6667
+    },
+    {
+      "decile": 9,
+      "n": 42,
+      "observed_rate": 0.9048,
+      "predicted_mean": 0.8328
+    },
+    {
+      "decile": 10,
+      "n": 42,
+      "observed_rate": 1.0,
+      "predicted_mean": 0.9115
+    }
+  ],
+  "min_positive_labels_threshold": 500,
+  "n_features": 31,
+  "run_id": "run_1NXsztG1",
+  "scenario": "normal",
+  "seed": 7,
+  "split_days": {
+    "test": [
+      27,
+      30
+    ],
+    "train": [
+      1,
+      21
+    ],
+    "valid": [
+      22,
+      26
+    ]
+  },
+  "splits": {
+    "test": {
+      "base_rate": 0.247,
+      "brier": 0.0363,
+      "lift_over_base_rate": 3.907,
+      "n": 421,
+      "positives": 104,
+      "pr_auc": 0.9652,
+      "roc_auc": 0.9893
+    },
+    "train": {
+      "base_rate": 0.5134,
+      "brier": 0.0986,
+      "lift_over_base_rate": 1.841,
+      "n": 1044,
+      "positives": 536,
+      "pr_auc": 0.9452,
+      "roc_auc": 0.9462
+    },
+    "valid": {
+      "base_rate": 0.2163,
+      "brier": 0.0184,
+      "lift_over_base_rate": 4.598,
+      "n": 319,
+      "positives": 69,
+      "pr_auc": 0.9946,
+      "roc_auc": 0.9986
+    }
+  },
+  "trained_on_arm": "baseline",
+  "warnings": [],
+  "zero_gain_features": [
+    "is_recurring",
+    "is_month_end",
+    "rail_downtime_active",
+    "candidate_delay_hours"
+  ]
+}

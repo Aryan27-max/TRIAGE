@@ -249,6 +249,7 @@ class Runner:
         city_tier: int | None = None,
         vpa_handle: str | None = None,
         payer_bank: str | None = None,
+        mcc: str | None = None,
     ) -> db.Case:
         """A case row in RECEIVED. Not yet inserted — ``state.open_case`` does that."""
         return db.Case(
@@ -265,6 +266,7 @@ class Runner:
             city_tier=city_tier,
             vpa_handle=vpa_handle,
             payer_bank=payer_bank,
+            mcc=mcc,
             state=st.RECEIVED,
             arm=arm,
             max_attempts=self.max_attempts,

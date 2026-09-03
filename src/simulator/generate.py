@@ -143,7 +143,8 @@ def generate(
         customer_id = db.stable_id("cust_", rng.randrange(n_customers), length=6)
         merchant_id = db.stable_id("mch_", rng.randrange(n_merchants), length=6)
         profile = world.customer_profile(customer_id)
-        band = str(world.merchant_profile(merchant_id)["ticket_band"])
+        merchant = world.merchant_profile(merchant_id)
+        band = str(merchant["ticket_band"])
 
         method = _weighted_pick(rng, method_mix)
         rail = _rail_for(method, profile, rng)
@@ -205,6 +206,7 @@ def generate(
                     city_tier=int(profile["city_tier"]),  # type: ignore[arg-type]
                     vpa_handle=str(profile["vpa_handle"]),
                     payer_bank=str(profile["payer_bank"]),
+                    mcc=str(merchant["mcc"]),
                     state=RECEIVED,
                     arm=None,  # Stage 3 assigns. Never regenerated per arm. (I-13)
                     max_attempts=DEFAULT_MAX_ATTEMPTS,
@@ -300,7 +302,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="python -m src.simulator.generate",
         description="Generate a deterministic payment population for TRIAGE.",
     )
-    parser.add_argument("--n", type=int, default=2000, help="number of payments")
+    parser.add_argument("--n", type=int, default=8000, help="number of payments")
     parser.add_argument("--days", type=int, default=30, help="length of the run window")
     parser.add_argument("--seed", type=int, default=42, help="every draw derives from this")
     parser.add_argument("--scenario", choices=SCENARIOS, default="normal")

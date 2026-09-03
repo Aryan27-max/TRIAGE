@@ -17,8 +17,17 @@ from eval.score import (
     SegmentRow,
     score,
 )
+from src.model.dataset import DATA_DIR as MODEL_DIR
 from src.policy.engine import PolicyEngine
 from src.store import db
+
+
+# What each adjacent gap in the arm chain actually isolates. research/02 §2.5.
+GAP_MEANING: dict[tuple[str, str], str] = {
+    ("baseline", "control"): "the value of the **taxonomy**",
+    ("treatment", "baseline"): "the value of the **model**",
+    ("treatment", "control"): "both together, for context",
+}
 
 
 def rupees(paise: int) -> str:
@@ -52,13 +61,168 @@ def _pp_cell(pp: float | None) -> str:
 
 
 def _segment_table(card: Scorecard, rows: list[SegmentRow], first: str) -> list[str]:
-    header = f"| {first} | n | " + " | ".join(card.arms) + " | pp |"
-    out = [header, "|" + "---|" * (len(card.arms) + 3)]
+    has_model = any(row.pp_model is not None for row in rows)
+    headline = f"pp<br>{card.focus}−{card.reference}"
+    header = f"| {first} | n | " + " | ".join(card.arms) + f" | {headline} |"
+    if has_model:
+        header += " pp<br>treatment−baseline |"
+    width = len(card.arms) + 3 + (1 if has_model else 0)
+    out = [header, "|" + "---|" * width]
     for row in rows:
         label = f"`{row.key}`" + (f" · {row.label}" if row.label else "")
         cells = " | ".join(_rate_cell(row, arm) for arm in card.arms)
-        out.append(f"| {label} | {row.n} | {cells} | {_pp_cell(row.pp)} |")
+        line = f"| {label} | {row.n} | {cells} | {_pp_cell(row.pp)} |"
+        if has_model:
+            line += f" {_pp_cell(row.pp_model)} |"
+        out.append(line)
     return out
+
+
+def _model_sections(card: Scorecard) -> list[str]:
+    """Sections 8 and 9: where the model can act at all, and how well it predicts.
+
+    Section 8 exists because the overall gap understates or overstates the model
+    depending on how much of the stream it is even allowed to touch. Reporting the
+    blended number alone would be misleading in both directions.
+    """
+    eligible = card.model_eligible
+    if not eligible or "treatment" not in card.arms:
+        return []
+
+    lines = [
+        "## 8. Model-eligible codes only",
+        "",
+        f"The model is consulted for **{', '.join(eligible['actions'])}** and nothing "
+        f"else. (I-1) That is **{eligible['codes']} of {eligible['total_codes']}** "
+        f"codes — on the other "
+        f"{eligible['total_codes'] - eligible['codes']}, `treatment` delegates to "
+        f"`baseline` and the two arms are identical by construction.",
+        "",
+        f"This section restricts to the {eligible['payments']} payments whose opening "
+        "failure carries a model-eligible code. It is the only surface on which the "
+        "model can move anything, and it bounds the achievable uplift before a single "
+        "row is scored.",
+        "",
+        "| arm | payments | recovered | rate | 95% CI |",
+        "|---|---|---|---|---|",
+    ]
+    for arm in card.arms:
+        block = eligible["arms"].get(arm)
+        if not block:
+            continue
+        lines.append(
+            f"| `{arm}` | {block['payments']} | {block['recovered']} | "
+            f"**{block['rate']:.1%}** | {block['ci_low']:.1%} – {block['ci_high']:.1%} |"
+        )
+    lines += ["", "| gap | pp | z | p |", "|---|---|---|---|"]
+    for gap in eligible["gaps"]:
+        lines.append(
+            f"| `{gap['focus']}` − `{gap['reference']}` | {gap['pp']:+.1f} | "
+            f"{gap['z']:.2f} | {gap['p_value']:.3f} |"
+        )
+    lines.append("")
+
+    diagnostics = card.diagnostics
+    metrics = diagnostics.get("metrics") or {}
+    if not metrics:
+        lines += [
+            "## 9. Model diagnostics",
+            "",
+            "No training artefacts found in `eval/model/`. Run "
+            "`python -m src.model.train`.",
+            "",
+        ]
+        return lines
+
+    dataset = diagnostics.get("dataset") or {}
+    lines += [
+        "## 9. Model diagnostics",
+        "",
+        "Diagnostic only. The result is the recovery uplift above; these numbers exist "
+        "to say *why* it came out that way. A PR-AUC at the base rate means nothing "
+        "was learnable; good discrimination with no uplift points at the decision "
+        "layer rather than the model.",
+        "",
+        f"Trained on run `{metrics.get('run_id')}` "
+        f"(`{metrics.get('scenario')}`, seed {metrics.get('seed')}), "
+        f"{metrics.get('trained_on_arm')} attempts only — control's action choice is "
+        "uncorrelated with the error code, so its rows teach nothing "
+        "action-conditional. Stopped at iteration "
+        f"{metrics.get('best_iteration')}.",
+        "",
+    ]
+    if dataset:
+        lines += [
+            f"Dataset: {dataset.get('n_rows')} rows, one per attempt (I-11), "
+            f"{dataset.get('n_positive')} positive "
+            f"({dataset.get('positive_rate', 0):.1%}). Temporal split (I-10), days "
+            f"{dataset.get('split_days', {}).get('train')} / "
+            f"{dataset.get('split_days', {}).get('valid')} / "
+            f"{dataset.get('split_days', {}).get('test')}.",
+            "",
+        ]
+
+    lines += ["| split | n | positives | base rate | PR-AUC | ROC-AUC | Brier |",
+              "|---|---|---|---|---|---|---|"]
+    for name, block in (metrics.get("splits") or {}).items():
+        if not block.get("n"):
+            lines.append(f"| {name} | 0 | — | — | — | — | — |")
+            continue
+        lines.append(
+            f"| {name} | {block['n']} | {block['positives']} | "
+            f"{block['base_rate']:.3f} | **{block['pr_auc']:.3f}** | "
+            f"{block['roc_auc']:.3f} | {block['brier']:.3f} |"
+        )
+    lines.append("")
+    for warning in metrics.get("warnings", []):
+        lines.append(f"> **Warning:** {warning}")
+    if metrics.get("warnings"):
+        lines.append("")
+
+    calibration = metrics.get("calibration_test") or []
+    if calibration:
+        lines += [
+            "### Calibration, test split",
+            "",
+            "Predicted probability against observed rate, by decile. Monotone ordering "
+            "means the ranking is real; a gap between the two columns means the "
+            "*level* is off, which matters because the expected-value argmax multiplies "
+            "the predicted probability by the amount.",
+            "",
+            "| decile | n | predicted | observed |",
+            "|---|---|---|---|",
+        ]
+        for row in calibration:
+            lines.append(
+                f"| {row['decile']} | {row['n']} | {row['predicted_mean']:.3f} | "
+                f"{row['observed_rate']:.3f} |"
+            )
+        lines.append("")
+
+    importances = diagnostics.get("importances") or []
+    if importances:
+        total = sum(r["gain"] for r in importances) or 1.0
+        lines += [
+            "### Top features by gain",
+            "",
+            "| feature | gain share | splits |",
+            "|---|---|---|",
+        ]
+        for row in importances:
+            lines.append(
+                f"| `{row['feature']}` | {100 * row['gain'] / total:.1f}% | "
+                f"{row['split']} |"
+            )
+        lines.append("")
+    zero_gain = metrics.get("zero_gain_features") or []
+    if zero_gain:
+        lines += [
+            "**Features the model never used:** "
+            + ", ".join(f"`{f}`" for f in zero_gain)
+            + ".",
+            "",
+        ]
+    return lines
 
 
 def render(card: Scorecard) -> str:
@@ -108,11 +272,17 @@ def render(card: Scorecard) -> str:
     lines.append("")
 
     if card.gaps:
-        lines += ["| gap | pp | relative | z | p |", "|---|---|---|---|---|"]
+        lines += [
+            "Two contributions, reported separately. Blending them into a single "
+            "`treatment − control` number would hide which half did the work.",
+            "",
+            "| gap | measures | pp | relative | z | p |",
+            "|---|---|---|---|---|---|",
+        ]
         for gap in card.gaps:
             lines.append(
-                f"| `{gap.focus}` − `{gap.reference}` | {gap.pp:+.1f} | "
-                f"{gap.relative:+.1%} | {gap.z:.2f} | {gap.p_value:.3f} |"
+                f"| `{gap.focus}` − `{gap.reference}` | {GAP_MEANING.get((gap.focus, gap.reference), '—')} "
+                f"| {gap.pp:+.1f} | {gap.relative:+.1%} | {gap.z:.2f} | {gap.p_value:.3f} |"
             )
         lines.append("")
         for gap in card.gaps:
@@ -143,17 +313,27 @@ def render(card: Scorecard) -> str:
         f"{rupees(NUDGE_COST_PAISE)} — both our assumptions, and identical across arms, "
         f"so the comparison does not depend on the absolute figures.",
         "",
-        "| arm | attempts | per payment | nudges | total cost | cost per recovery | "
-        "amount recovered |",
-        "|---|---|---|---|---|---|---|",
+        "| arm | attempts | per payment | nudges | negative-EV stops | total cost | "
+        "cost per recovery | amount recovered |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     for arm in card.arms:
         s = card.scores[arm]
         lines.append(
             f"| `{arm}` | {s.attempts} | {s.attempts_per_payment:.2f} | {s.nudges} | "
-            f"{rupees(s.total_cost_paise)} | {rupees(s.cost_per_recovery_paise)} | "
+            f"{s.negative_ev_stops} | {rupees(s.total_cost_paise)} | "
+            f"{rupees(s.cost_per_recovery_paise)} | "
             f"{rupees(s.amount_recovered_paise)} |"
         )
+    if any(card.scores[a].negative_ev_stops for a in card.arms):
+        lines += [
+            "",
+            "**Negative-EV stops** are decisions not to spend an attempt: no candidate "
+            "execution had `P(success) × amount > attempt cost`. research/06 §6.6 calls "
+            "this the local equivalent of Stripe declining a payment it does not expect "
+            "to be authorised. Declining to act is a decision, and the audit log "
+            "records it as one.",
+        ]
     lines += [
         "",
         "### Trailing window effect (I-15)",
@@ -274,10 +454,13 @@ def render(card: Scorecard) -> str:
         )
     lines.append("")
 
-    # -- 8. caveats -----------------------------------------------------------
+    # -- 8. model-eligible surface --------------------------------------------
+    lines += _model_sections(card)
+
+    # -- 9. caveats -----------------------------------------------------------
     smallest = min((card.scores[a].payments for a in card.arms), default=0)
     lines += [
-        "## 8. Caveats",
+        "## 10. Caveats",
         "",
         "- **The data is synthetic.** No public NPCI decline dataset exists. The "
         "simulator's rates are grounded in Razorpay's published material where it says "
@@ -306,13 +489,25 @@ def render(card: Scorecard) -> str:
     return "\n".join(lines) + "\n"
 
 
-def build(db_path: Path | str, run_id: str, *, reference: str = "control") -> Scorecard:
+def build(
+    db_path: Path | str,
+    run_id: str,
+    *,
+    reference: str = "control",
+    model_dir: Path | str | None = MODEL_DIR,
+) -> Scorecard:
     conn = db.connect(db_path)
     try:
         run = db.get_run(conn, run_id)
         if run is None:
             raise ValueError(f"no run {run_id!r} in {db_path}")
-        return score(conn, run, PolicyEngine().load(), reference=reference)
+        return score(
+            conn,
+            run,
+            PolicyEngine().load(),
+            reference=reference,
+            model_dir=model_dir,
+        )
     finally:
         conn.close()
 
@@ -323,8 +518,9 @@ def write_report(
     out_path: Path | str,
     *,
     reference: str = "control",
+    model_dir: Path | str | None = MODEL_DIR,
 ) -> Scorecard:
-    card = build(db_path, run_id, reference=reference)
+    card = build(db_path, run_id, reference=reference, model_dir=model_dir)
     out = Path(out_path)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(render(card), encoding="utf-8")

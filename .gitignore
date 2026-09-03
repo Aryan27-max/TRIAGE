@@ -6,3 +6,6 @@ __pycache__/
 .env
 .scratch/
 eval/runs/
+
+# Regenerable from the training run; the model and its metrics are committed.
+eval/model/dataset.csv

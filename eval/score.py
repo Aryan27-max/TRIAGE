@@ -19,13 +19,15 @@ is not there. Everything is stdlib — no scipy.
 
 from __future__ import annotations
 
+import json
 import math
 import sqlite3
 from collections import defaultdict
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from src.policy.engine import ACTIONS, PolicyEngine
+from src.policy.engine import ACTIONS, MODEL_ELIGIBLE_ACTIONS, PolicyEngine
 from src.store import db
 
 DAY = 86400
@@ -41,6 +43,15 @@ ATTEMPT_COST_PAISE = 200
 NUDGE_COST_PAISE = 20
 
 RECOVERED = "RECOVERED"
+
+# The chain the report walks. Each adjacent pair is one contribution:
+# baseline - control is the value of the taxonomy, treatment - baseline the value of
+# the model. Reporting only treatment - control would blend the two and hide which
+# half did the work. (research/02 §2.5)
+ARM_ORDER: tuple[str, ...] = ("control", "baseline", "treatment")
+
+# Audit reason the treatment arm writes when no candidate has positive expected value.
+NEGATIVE_EV_REASON = "negative_expected_value"
 
 TTR_BUCKETS: tuple[tuple[str, int], ...] = (
     ("< 1h", 3600),
@@ -115,6 +126,7 @@ class ArmScore:
     arm: str
     payments: int
     recovered: int
+    negative_ev_stops: int
     rate: float
     ci_low: float
     ci_high: float
@@ -150,7 +162,8 @@ class SegmentRow:
     label: str
     n: int
     counts: dict[str, tuple[int, int]] = field(default_factory=dict)
-    pp: float | None = None
+    pp: float | None = None          # focus arm minus control — the headline gap
+    pp_model: float | None = None    # treatment minus baseline — the model's own gap
 
     def rate(self, arm: str) -> float | None:
         entry = self.counts.get(arm)
@@ -172,15 +185,33 @@ class Scorecard:
     by_error_code: list[SegmentRow]
     by_action: list[SegmentRow]
     by_rail: list[SegmentRow]
+    focus: str
+    model_eligible: dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     @property
     def losses(self) -> list[SegmentRow]:
-        """Segments where the focus arm underperforms the reference. (I-16)
+        """Segments where the focus arm underperforms control. (I-16)
 
         Not a filter applied for tidiness — these rows are also in `by_error_code`.
         This is the same data pulled out so the report cannot bury it.
         """
         return [row for row in self.by_error_code if row.pp is not None and row.pp < 0]
+
+    @property
+    def model_losses(self) -> list[SegmentRow]:
+        """Segments where treatment underperforms baseline — the model's own losses."""
+        return [
+            row
+            for row in self.by_error_code
+            if row.pp_model is not None and row.pp_model < 0
+        ]
+
+    def gap(self, focus: str, reference: str) -> Gap | None:
+        for candidate in self.gaps:
+            if candidate.focus == focus and candidate.reference == reference:
+                return candidate
+        return None
 
 
 # -- scoring ------------------------------------------------------------------
@@ -243,6 +274,21 @@ def _time_to_recovery(deltas: list[int]) -> TimeToRecovery:
     )
 
 
+def _pp(
+    counts: dict[str, tuple[int, int]], focus: str | None, reference: str | None
+) -> float | None:
+    """Percentage-point gap between two arms within one segment, or None."""
+    if focus is None or reference is None:
+        return None
+    if focus not in counts or reference not in counts:
+        return None
+    f_n, f_k = counts[focus]
+    r_n, r_k = counts[reference]
+    if not f_n or not r_n:
+        return None
+    return round((f_k / f_n - r_k / r_n) * 100.0, 1)
+
+
 def _segment(
     rows: Iterable[dict[str, Any]],
     arms: Sequence[str],
@@ -251,6 +297,7 @@ def _segment(
     label_of,
     reference: str,
     focus: str | None,
+    model_pair: tuple[str, str] | None = None,
 ) -> list[SegmentRow]:
     totals: dict[str, dict[str, list[int]]] = defaultdict(
         lambda: {arm: [0, 0] for arm in arms}
@@ -268,14 +315,56 @@ def _segment(
     for key, per_arm in totals.items():
         counts = {arm: (per_arm[arm][0], per_arm[arm][1]) for arm in arms}
         n = sum(c[0] for c in counts.values())
-        pp: float | None = None
-        if focus is not None and focus in counts and reference in counts:
-            f_n, f_k = counts[focus]
-            r_n, r_k = counts[reference]
-            if f_n and r_n:
-                pp = round((f_k / f_n - r_k / r_n) * 100.0, 1)
-        out.append(SegmentRow(key=key, label=labels[key], n=n, counts=counts, pp=pp))
+        pp = _pp(counts, focus, reference)
+        pp_model = _pp(counts, *model_pair) if model_pair else None
+        out.append(
+            SegmentRow(
+                key=key, label=labels[key], n=n, counts=counts, pp=pp, pp_model=pp_model
+            )
+        )
     out.sort(key=lambda r: (-r.n, r.key))
+    return out
+
+
+def _negative_ev_stops(conn: sqlite3.Connection) -> dict[str, int]:
+    """How often each arm declined to spend an attempt on expected-value grounds.
+
+    research/06 §6.6: refusing to act is a decision, and the audit log records it as
+    one. Counting them is how that shows up in the report rather than only in a trail
+    nobody opens.
+    """
+    counts: dict[str, int] = defaultdict(int)
+    for row in db.fetch_all(
+        conn,
+        "SELECT c.arm AS arm, COUNT(*) AS n FROM audit a "
+        "JOIN cases c ON c.id = a.case_id WHERE a.reason = ? GROUP BY c.arm",
+        (NEGATIVE_EV_REASON,),
+    ):
+        counts[row["arm"]] = row["n"]
+    return counts
+
+
+def _model_diagnostics(model_dir: Path | str | None) -> dict[str, Any]:
+    """PR-AUC, calibration and importances, read off the training artefacts.
+
+    Diagnostic only. The result is the recovery uplift; these numbers exist to tell a
+    reader *why* the uplift came out the way it did — a PR-AUC at the base rate and a
+    flat calibration table mean nothing was learnable, while good discrimination with
+    no uplift points at the decision layer instead.
+    """
+    if model_dir is None:
+        return {}
+    directory = Path(model_dir)
+    out: dict[str, Any] = {}
+    metrics_path = directory / "metrics.json"
+    importances_path = directory / "importances.json"
+    provenance_path = directory / "dataset_provenance.json"
+    if metrics_path.exists():
+        out["metrics"] = json.loads(metrics_path.read_text(encoding="utf-8"))
+    if importances_path.exists():
+        out["importances"] = json.loads(importances_path.read_text(encoding="utf-8"))[:15]
+    if provenance_path.exists():
+        out["dataset"] = json.loads(provenance_path.read_text(encoding="utf-8"))
     return out
 
 
@@ -285,9 +374,11 @@ def score(
     engine: PolicyEngine,
     *,
     reference: str = "control",
+    model_dir: Path | str | None = None,
 ) -> Scorecard:
     """Score one run. Pure read — nothing in here writes to the store."""
-    arms = run.arm_names
+    arms = [a for a in ARM_ORDER if a in run.arm_names]
+    arms += [a for a in run.arm_names if a not in arms]
     if not arms:
         raise ValueError(f"run {run.run_id} records no arms")
 
@@ -305,6 +396,7 @@ def score(
         "JOIN cases c ON c.id = a.case_id GROUP BY c.arm",
     ):
         attempts_by_arm[record["arm"]] = record["n"]
+    ev_stops = _negative_ev_stops(conn)
 
     scores: dict[str, ArmScore] = {}
     for arm in arms:
@@ -332,6 +424,7 @@ def score(
             arm=arm,
             payments=payments,
             recovered=recovered,
+            negative_ev_stops=ev_stops.get(arm, 0),
             rate=recovered / payments if payments else 0.0,
             ci_low=low,
             ci_high=high,
@@ -355,45 +448,100 @@ def score(
             states=dict(sorted(states.items())),
         )
 
-    focus = next((a for a in arms if a != reference), None)
+    # Both contributions, separately. Adjacent pairs of the chain first — those are
+    # the two numbers the submission reports — then the end-to-end gap for context.
     gaps: list[Gap] = []
-    if reference in scores:
-        for arm in arms:
-            if arm == reference:
-                continue
-            a, b = scores[arm], scores[reference]
-            z, p = two_proportion_z(a.recovered, a.payments, b.recovered, b.payments)
-            gaps.append(
-                Gap(
-                    focus=arm,
-                    reference=reference,
-                    focus_rate=a.rate,
-                    reference_rate=b.rate,
-                    pp=round((a.rate - b.rate) * 100.0, 1),
-                    relative=(a.rate - b.rate) / b.rate if b.rate else 0.0,
-                    z=z,
-                    p_value=p,
-                )
+    pairs: list[tuple[str, str]] = [
+        (arms[i + 1], arms[i]) for i in range(len(arms) - 1)
+    ]
+    if len(arms) > 2:
+        pairs.append((arms[-1], arms[0]))
+    for focus_arm, reference_arm in pairs:
+        a, b = scores[focus_arm], scores[reference_arm]
+        z, pvalue = two_proportion_z(a.recovered, a.payments, b.recovered, b.payments)
+        gaps.append(
+            Gap(
+                focus=focus_arm,
+                reference=reference_arm,
+                focus_rate=a.rate,
+                reference_rate=b.rate,
+                pp=round((a.rate - b.rate) * 100.0, 1),
+                relative=(a.rate - b.rate) / b.rate if b.rate else 0.0,
+                z=z,
+                p_value=pvalue,
             )
+        )
+
+    focus = arms[-1] if arms[-1] != reference else (arms[1] if len(arms) > 1 else arms[0])
+    model_pair = (
+        ("treatment", "baseline")
+        if "treatment" in arms and "baseline" in arms
+        else None
+    )
 
     def action_of(row: dict[str, Any]) -> str:
         return engine.resolve(row["error_code"]).action
 
     by_error_code = _segment(
-        rows, arms, cutoff_ts, lambda r: r["error_code"], action_of, reference, focus
+        rows, arms, cutoff_ts, lambda r: r["error_code"], action_of, reference, focus,
+        model_pair,
     )
     by_action = _segment(
-        rows, arms, cutoff_ts, action_of, lambda r: "", reference, focus
+        rows, arms, cutoff_ts, action_of, lambda r: "", reference, focus, model_pair
     )
     by_action.sort(key=lambda r: ACTIONS.index(r.key) if r.key in ACTIONS else 99)
     by_rail = _segment(
-        rows, arms, cutoff_ts, lambda r: r["method"], lambda r: "", reference, focus
+        rows, arms, cutoff_ts, lambda r: r["method"], lambda r: "", reference, focus,
+        model_pair,
     )
+
+    # The only surface where treatment can differ from baseline at all. Reporting the
+    # overall gap without this section makes a bounded result look like a weak one.
+    eligible_rows = [
+        r for r in rows if engine.resolve(r["error_code"]).action in MODEL_ELIGIBLE_ACTIONS
+    ]
+    eligible: dict[str, Any] = {
+        "actions": sorted(MODEL_ELIGIBLE_ACTIONS),
+        "codes": len(
+            [c for c in engine.codes if engine.resolve(c).action in MODEL_ELIGIBLE_ACTIONS]
+        ),
+        "total_codes": len(engine.codes),
+        "payments": len(eligible_rows),
+        "arms": {},
+        "gaps": [],
+    }
+    for arm in arms:
+        subset = [r for r in eligible_rows if r["arm"] == arm]
+        wins = sum(1 for r in subset if _recovered(r, cutoff_ts))
+        low, high = wilson_interval(wins, len(subset))
+        eligible["arms"][arm] = {
+            "payments": len(subset),
+            "recovered": wins,
+            "rate": round(wins / len(subset), 4) if subset else 0.0,
+            "ci_low": round(low, 4),
+            "ci_high": round(high, 4),
+        }
+    for focus_arm, reference_arm in pairs:
+        fa = eligible["arms"][focus_arm]
+        ra = eligible["arms"][reference_arm]
+        z, pvalue = two_proportion_z(
+            fa["recovered"], fa["payments"], ra["recovered"], ra["payments"]
+        )
+        eligible["gaps"].append(
+            {
+                "focus": focus_arm,
+                "reference": reference_arm,
+                "pp": round((fa["rate"] - ra["rate"]) * 100.0, 1),
+                "z": round(z, 3),
+                "p_value": round(pvalue, 4),
+            }
+        )
 
     return Scorecard(
         run=run,
         arms=arms,
         reference=reference,
+        focus=focus,
         window_days=run.days,
         trailing_days=run.trailing_days,
         cutoff_ts=cutoff_ts,
@@ -402,6 +550,8 @@ def score(
         by_error_code=by_error_code,
         by_action=by_action,
         by_rail=by_rail,
+        model_eligible=eligible,
+        diagnostics=_model_diagnostics(model_dir),
     )
 
 
@@ -427,6 +577,7 @@ def to_api_shape(card: Scorecard) -> dict[str, Any]:
                 "attempts": s.attempts,
                 "attempt_cost": s.attempt_cost_paise,
                 "nudges": s.nudges,
+                "negative_ev_stops": s.negative_ev_stops,
                 "total_cost_paise": s.total_cost_paise,
                 "amount_recovered_paise": s.amount_recovered_paise,
             }
@@ -451,6 +602,7 @@ def to_api_shape(card: Scorecard) -> dict[str, Any]:
                     for arm in card.arms
                 },
                 "pp": row.pp,
+                "pp_model": row.pp_model,
             }
             for row in card.by_error_code
         ],
@@ -471,4 +623,14 @@ def to_api_shape(card: Scorecard) -> dict[str, Any]:
         "losing_segments": [
             {"code": row.key, "n": row.n, "pp": row.pp} for row in card.losses
         ],
+        "model_losing_segments": [
+            {"code": row.key, "n": row.n, "pp_model": row.pp_model}
+            for row in card.model_losses
+        ],
+        "model_eligible": card.model_eligible,
+        "model_diagnostics": {
+            "splits": card.diagnostics.get("metrics", {}).get("splits", {}),
+            "warnings": card.diagnostics.get("metrics", {}).get("warnings", []),
+            "top_features": card.diagnostics.get("importances", [])[:15],
+        },
     }

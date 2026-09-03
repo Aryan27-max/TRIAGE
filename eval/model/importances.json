@@ -1,0 +1,157 @@
+[
+  {
+    "feature": "hours_since_first_failure",
+    "gain": 2504.91,
+    "split": 49
+  },
+  {
+    "feature": "days_to_salary_date",
+    "gain": 1411.64,
+    "split": 84
+  },
+  {
+    "feature": "day_of_month",
+    "gain": 898.36,
+    "split": 93
+  },
+  {
+    "feature": "log_amount",
+    "gain": 491.39,
+    "split": 124
+  },
+  {
+    "feature": "error_source",
+    "gain": 208.95,
+    "split": 17
+  },
+  {
+    "feature": "error_code",
+    "gain": 191.45,
+    "split": 15
+  },
+  {
+    "feature": "city_tier",
+    "gain": 174.05,
+    "split": 39
+  },
+  {
+    "feature": "alt_rail_success_rate_1h",
+    "gain": 157.48,
+    "split": 61
+  },
+  {
+    "feature": "hour_cos",
+    "gain": 143.82,
+    "split": 70
+  },
+  {
+    "feature": "hour_sin",
+    "gain": 85.76,
+    "split": 42
+  },
+  {
+    "feature": "action_class",
+    "gain": 66.62,
+    "split": 8
+  },
+  {
+    "feature": "rail_downtime_severity",
+    "gain": 64.17,
+    "split": 15
+  },
+  {
+    "feature": "dow_cos",
+    "gain": 54.46,
+    "split": 21
+  },
+  {
+    "feature": "cust_prior_failures_30d",
+    "gain": 46.56,
+    "split": 12
+  },
+  {
+    "feature": "rail_success_rate_1h",
+    "gain": 41.77,
+    "split": 22
+  },
+  {
+    "feature": "candidate_target_rail",
+    "gain": 38.09,
+    "split": 20
+  },
+  {
+    "feature": "mcc",
+    "gain": 36.66,
+    "split": 8
+  },
+  {
+    "feature": "dow_sin",
+    "gain": 21.58,
+    "split": 14
+  },
+  {
+    "feature": "vpa_handle",
+    "gain": 16.46,
+    "split": 3
+  },
+  {
+    "feature": "ticket_size_band",
+    "gain": 12.4,
+    "split": 4
+  },
+  {
+    "feature": "cust_prior_recovery_lag_h",
+    "gain": 6.01,
+    "split": 1
+  },
+  {
+    "feature": "method",
+    "gain": 4.04,
+    "split": 1
+  },
+  {
+    "feature": "cust_hist_success_rate",
+    "gain": 3.91,
+    "split": 2
+  },
+  {
+    "feature": "is_peak_window",
+    "gain": 3.62,
+    "split": 1
+  },
+  {
+    "feature": "payer_bank",
+    "gain": 3.2,
+    "split": 1
+  },
+  {
+    "feature": "attempt_number",
+    "gain": 2.76,
+    "split": 2
+  },
+  {
+    "feature": "candidate_action",
+    "gain": 1.81,
+    "split": 1
+  },
+  {
+    "feature": "is_recurring",
+    "gain": 0.0,
+    "split": 0
+  },
+  {
+    "feature": "is_month_end",
+    "gain": 0.0,
+    "split": 0
+  },
+  {
+    "feature": "rail_downtime_active",
+    "gain": 0.0,
+    "split": 0
+  },
+  {
+    "feature": "candidate_delay_hours",
+    "gain": 0.0,
+    "split": 0
+  }
+]

@@ -87,10 +87,10 @@ def _case(
     )
     conn.execute(
         f"INSERT INTO cases ({db._CASE_COLUMNS}) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             case_id, payment_id, "cust_1", "mch_1", method, "@oksbi", amount,
-            code, "bank", failed_at, 2, "@oksbi", "SBIN", state, arm, 4,
+            code, "bank", failed_at, 2, "@oksbi", "SBIN", "5411", state, arm, 4,
             failed_at + 7 * DAY, None, None, nudge_sent_at, recovered_at,
             amount if recovered_at else None, failed_at,
         ),
