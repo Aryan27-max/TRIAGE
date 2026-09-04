@@ -61,6 +61,11 @@ class Scorer:
         manifest = json.loads(features_path.read_text(encoding="utf-8"))
         self.feature_names: list[str] = list(manifest["features"])
         self.categorical: list[str] = list(manifest.get("categorical", []))
+        # Level lists frozen at training time. Without them pandas would re-derive
+        # category codes from whatever is in the batch, and LightGBM — which matches
+        # categoricals by code — would score a different feature than it was trained
+        # on. The failure is silent: a plausible probability, quietly wrong.
+        self.categories: dict[str, list[str]] = dict(manifest.get("categories", {}))
 
     def validate(self, features: dict[str, Any]) -> None:
         expected = set(self.feature_names)
@@ -83,7 +88,16 @@ class Scorer:
             self.validate(row)
         frame = pd.DataFrame([{k: row[k] for k in self.feature_names} for row in rows])
         for column in self.categorical:
-            frame[column] = frame[column].astype("category")
+            levels = self.categories.get(column)
+            if levels is None:
+                frame[column] = frame[column].astype("category")
+            else:
+                # A level the training data never contained lands as NaN, which is
+                # what LightGBM expects for an unseen category — not a silently
+                # reassigned code belonging to some other value.
+                frame[column] = pd.Categorical(
+                    frame[column].astype(str), categories=levels
+                )
         return [float(p) for p in self._booster.predict(frame)]
 
 

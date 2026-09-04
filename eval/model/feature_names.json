@@ -42,5 +42,82 @@
     "method",
     "candidate_action",
     "candidate_target_rail"
-  ]
+  ],
+  "categories": {
+    "payer_bank": [
+      "HDFC",
+      "ICIC",
+      "KKBK",
+      "PUNB",
+      "SBIN",
+      "UTIB"
+    ],
+    "vpa_handle": [
+      "@apl",
+      "@okaxis",
+      "@okhdfcbank",
+      "@oksbi",
+      "@paytm",
+      "@ybl"
+    ],
+    "mcc": [
+      "4131",
+      "4900",
+      "5411",
+      "5732",
+      "5812",
+      "7372"
+    ],
+    "error_code": [
+      "authorisation_declined_by_psp",
+      "bank_cutoff_in_progress",
+      "bank_not_available",
+      "bank_technical_error",
+      "gateway_technical_error",
+      "insufficient_funds",
+      "issuer_technical_error",
+      "otp_attempts_exceeded",
+      "payment_declined_due_to_high_traffic",
+      "payment_failed",
+      "pin_attempts_exceeded",
+      "psp_not_available",
+      "request_timed_out",
+      "server_error",
+      "transaction_daily_count_exceeded",
+      "transaction_daily_limit_exceeded",
+      "transaction_frequency_limit_exceeded",
+      "upi_app_technical_error",
+      "vpa_resolution_failed"
+    ],
+    "error_source": [
+      "bank",
+      "business",
+      "customer",
+      "gateway",
+      "issuer",
+      "npci",
+      "unknown"
+    ],
+    "action_class": [
+      "RETRY_NOW",
+      "RETRY_SCHEDULED",
+      "SWITCH_RAIL"
+    ],
+    "method": [
+      "card",
+      "netbanking",
+      "upi",
+      "wallet"
+    ],
+    "candidate_action": [
+      "RETRY_NOW",
+      "RETRY_SCHEDULED",
+      "SWITCH_RAIL"
+    ],
+    "candidate_target_rail": [
+      "card",
+      "same",
+      "upi"
+    ]
+  }
 }

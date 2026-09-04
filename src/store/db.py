@@ -180,8 +180,19 @@ class Downtime:
 # -- connection ---------------------------------------------------------------
 
 
-def connect(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(path), check_same_thread=False)
+def connect(
+    path: Path | str = DEFAULT_DB_PATH, *, read_only: bool = False
+) -> sqlite3.Connection:
+    """Open the store. ``read_only`` opens through SQLite's URI mode=ro.
+
+    Enforced by the driver rather than by application discipline: a deployed exhibit
+    must be unable to write, not merely trusted not to.
+    """
+    if read_only:
+        uri = f"file:{Path(path).as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, check_same_thread=False)
+    else:
+        conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     return conn

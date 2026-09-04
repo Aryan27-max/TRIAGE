@@ -1,0 +1,25 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body { height: 100%; }
+body { background: #10151C; color: #E4EAF2; }
+
+/* Motion answers an action or does not happen. When the reader has asked for less of
+   it, rows still appear — they just do not travel. (research/08 §8.3) */
+@media (prefers-reduced-motion: reduce) {
+  .animate-row-in { animation: rowInFlat 120ms ease-out both; }
+  * { transition-duration: 1ms !important; }
+}
+
+/* The JSON tokeniser's six colours. A syntax-highlighting library is 40kb for this. */
+.tok-key { color: #8AB4F8; }
+.tok-str { color: #7EE2A8; }
+.tok-num { color: #F5A524; }
+.tok-bool { color: #E5484D; }
+.tok-null { color: #7D8CA1; }
+.tok-punct { color: #5A6B85; }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #10151C; }
+::-webkit-scrollbar-thumb { background: #2B3644; border-radius: 999px; }

@@ -2,10 +2,19 @@ __pycache__/
 .pytest_cache/
 *.pyc
 .venv/
-*.db
 .env
 .scratch/
-eval/runs/
+.verify/
+node_modules/
+.next/
+dashboard/.env.local
 
-# Regenerable from the training run; the model and its metrics are committed.
-eval/model/dataset.csv
+# The working store, rebuilt by the simulator on demand.
+/triage.db
+
+# The two 8000-payment evaluation runs ARE the results and are committed, so a fresh
+# clone can serve them without a 40-minute regeneration. The 40 000-payment training
+# population is 12 MB and reproduces exactly from one command:
+#   python -m eval.run_arms --seed 7 --scenario normal --n 40000 --arms baseline
+eval/runs/run_1NXsztG1.db
+eval/model/verification.txt

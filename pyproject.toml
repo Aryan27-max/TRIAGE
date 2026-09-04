@@ -30,5 +30,10 @@ testpaths = ["tests"]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[dependency-groups]
+dev = [
+    "matplotlib>=3.11.1",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src", "eval"]

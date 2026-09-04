@@ -17,7 +17,7 @@ import sqlite3
 from fastapi import APIRouter, Depends, Query
 
 from src.api import schemas
-from src.api.deps import get_conn
+from src.api.deps import get_conn, require_writable
 from src.api.errors import InvalidQueryParamError
 from src.api.schemas import ErrorEnvelope
 from src.simulator.rails import METHODS
@@ -64,6 +64,7 @@ def rail_health(
 )
 def inject_downtime(
     body: schemas.DowntimeCreate,
+    _writable: None = Depends(require_writable),
     conn: sqlite3.Connection = Depends(get_conn),
 ) -> schemas.DowntimeRecord:
     for name, value, allowed in (

@@ -115,6 +115,7 @@ def train(
 ) -> dict[str, Any]:
     """Build the dataset, split it temporally, train, and write every artefact."""
     import lightgbm as lgb
+    import pandas as pd
 
     from src.features.build import CATEGORICAL_FEATURES, FEATURE_NAMES
 
@@ -136,8 +137,15 @@ def train(
     write_dataset(rows, prov, directory)
 
     frame = to_frame(rows)
+    # The level list is part of the model, not an artefact of the batch. LightGBM
+    # matches categoricals by integer code, and pandas derives those codes from the
+    # values present — so a five-row candidate batch at inference time would assign
+    # `error_code` a different code than training did, silently and plausibly.
+    categories: dict[str, list[str]] = {}
     for column in CATEGORICAL_FEATURES:
-        frame[column] = frame[column].astype("category")
+        levels = sorted(frame[column].astype(str).unique().tolist())
+        categories[column] = levels
+        frame[column] = pd.Categorical(frame[column].astype(str), categories=levels)
 
     train_df = frame[frame["split"] == "train"]
     valid_df = frame[frame["split"] == "valid"]
@@ -233,7 +241,13 @@ def train(
     model.save_model(str(directory / "model.txt"))
     (directory / "feature_names.json").write_text(
         json.dumps(
-            {"features": columns, "categorical": categorical}, indent=2
+            {
+                "features": columns,
+                "categorical": categorical,
+                # Pinned so inference reproduces training's codes exactly.
+                "categories": categories,
+            },
+            indent=2,
         ),
         encoding="utf-8",
     )

@@ -20,8 +20,8 @@ from fastapi import APIRouter, Depends
 from eval.report import build as build_scorecard
 from eval.run_arms import ARM_FACTORIES, RUNS_DIR, run as execute_run, run_id_for
 from eval.score import to_api_shape
-from src.api import schemas
-from src.api.deps import get_engine
+from src.api import config, schemas
+from src.api.deps import get_engine, require_writable
 from src.api.errors import InvalidQueryParamError, NotFoundError
 from src.api.schemas import ErrorEnvelope
 from src.policy.engine import PolicyEngine
@@ -35,7 +35,7 @@ MAX_DAYS = 120
 
 
 def _run_db(run_id: str) -> Path:
-    path = RUNS_DIR / f"{run_id}.db"
+    path = config.runs_dir() / f"{run_id}.db"
     if not path.exists():
         raise NotFoundError(
             f"No evaluation run exists with id {run_id!r}",
@@ -56,6 +56,7 @@ def _run_db(run_id: str) -> Path:
 def simulator_run(
     body: schemas.SimulatorRunRequest,
     engine: PolicyEngine = Depends(get_engine),
+    _writable: None = Depends(require_writable),
 ) -> schemas.RunAccepted:
     if body.scenario not in SCENARIOS:
         raise InvalidQueryParamError(
@@ -100,8 +101,9 @@ def simulator_run(
 )
 def list_runs() -> schemas.RunCollection:
     items: list[schemas.RunSummary] = []
-    if RUNS_DIR.exists():
-        for path in sorted(RUNS_DIR.glob("*.db")):
+    directory = config.runs_dir()
+    if directory.exists():
+        for path in sorted(directory.glob("*.db")):
             conn = db.connect(path)
             try:
                 for run in db.list_runs(conn):

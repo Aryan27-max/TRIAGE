@@ -20,7 +20,7 @@ from fastapi import APIRouter, Body, Depends, Header, Response
 
 from src.api import schemas
 from src.api.schemas import ErrorEnvelope
-from src.api.deps import get_conn, get_runner, get_world
+from src.api.deps import get_conn, get_runner, get_world, require_writable
 from src.api.errors import (
     AwaitingStatusError,
     BadErrorCodeError,
@@ -32,7 +32,7 @@ from src.api.errors import (
 )
 from src.executor import state as st
 from src.executor.runner import AwaitingStatus, PolicyViolation, Runner
-from src.policy.engine import UnknownErrorCodeError
+from src.policy.engine import MODEL_ELIGIBLE_ACTIONS, UnknownErrorCodeError
 from src.simulator.world import World
 from src.store import db
 
@@ -151,6 +151,7 @@ def _require_case(conn: sqlite3.Connection, case_id: str) -> db.Case:
 def decide(
     body: schemas.DecideRequest,
     runner: Runner = Depends(get_runner),
+    conn: sqlite3.Connection = Depends(get_conn),
 ) -> schemas.Decision:
     """The policy table's answer. No payment is touched and nothing is stored.
 
@@ -166,7 +167,78 @@ def decide(
         )
     except UnknownErrorCodeError as exc:
         raise BadErrorCodeError(str(exc.code), step="recovery_decide") from exc
-    return schemas.Decision(**asdict(decision))
+
+    payload = asdict(decision)
+    payload["rail_health"] = _rail_health(
+        conn, body.method, decision.target_rail, body.now, body.vpa_handle,
+        body.payer_bank,
+    )
+    payload["model"] = _model_disposition(decision.action)
+    return schemas.Decision(**payload)
+
+
+def _rail_health(
+    conn: sqlite3.Connection,
+    method: str | None,
+    target_rail: str | None,
+    now: int,
+    vpa_handle: str | None = None,
+    payer_bank: str | None = None,
+) -> schemas.RailHealthSnapshot:
+    """The published downtime feed at the decision instant.
+
+    Observable state, read-only, and the same signal the baseline arm acts on — so the
+    Inspector can show a real `rails.health` row rather than a decorative one.
+    research/02 §2.4: high severity on the target means switching into a second outage,
+    which is worse than waiting for the first to clear.
+    """
+    active = db.list_downtimes(conn, at=now)
+    instruments = tuple(i for i in (vpa_handle, payer_bank) if i)
+
+    def worst(for_method: str | None) -> str | None:
+        if not for_method:
+            return None
+        ranked = {"low": 1, "medium": 2, "high": 3}
+        best: str | None = None
+        for event in active:
+            if event.method != for_method:
+                continue
+            if event.scope != "all" and event.instrument not in instruments:
+                continue
+            if best is None or ranked[event.severity] > ranked[best]:
+                best = event.severity
+        return best
+
+    target_severity = worst(target_rail)
+    return schemas.RailHealthSnapshot(
+        method=method,
+        severity=worst(method),
+        target_rail=target_rail,
+        target_severity=target_severity,
+        active_events=len(active),
+        switch_blocked=target_severity == "high",
+    )
+
+
+def _model_disposition(action: str) -> schemas.ModelDisposition:
+    """Whether the model is even reachable for this action class. (I-1)
+
+    Reported explicitly rather than left to be inferred: the absence of a model call on
+    86 of the 110 codes is the structural safety claim, and a field that says so is
+    harder to miss than a field that is simply not there.
+    """
+    eligible = action in MODEL_ELIGIBLE_ACTIONS
+    return schemas.ModelDisposition(
+        eligible=eligible,
+        consulted=False,
+        reason=(
+            "the policy table permits ranking within this class; the treatment arm "
+            "scores candidate executions here"
+            if eligible
+            else f"not invoked — {action} is decided by the policy table alone"
+        ),
+        eligible_actions=sorted(MODEL_ELIGIBLE_ACTIONS),
+    )
 
 
 # -- case lifecycle -----------------------------------------------------------
@@ -182,6 +254,7 @@ def decide(
 def create_case(
     body: schemas.CaseCreate,
     response: Response,
+    _writable: None = Depends(require_writable),
     conn: sqlite3.Connection = Depends(get_conn),
     runner: Runner = Depends(get_runner),
 ) -> schemas.CaseDetail:
@@ -298,6 +371,7 @@ def get_case(
 def create_attempt(
     case_id: str,
     body: schemas.AttemptCreate,
+    _writable: None = Depends(require_writable),
     idempotency_key: str | None = Header(None, alias="Idempotency-Key"),
     conn: sqlite3.Connection = Depends(get_conn),
     runner: Runner = Depends(get_runner),
@@ -360,6 +434,7 @@ def create_attempt(
 def status_poll(
     case_id: str,
     body: schemas.StatusPollRequest,
+    _writable: None = Depends(require_writable),
     conn: sqlite3.Connection = Depends(get_conn),
     runner: Runner = Depends(get_runner),
 ) -> schemas.CaseDetail:
@@ -392,6 +467,7 @@ def status_poll(
 def stop_case(
     case_id: str,
     body: schemas.StopRequest = Body(default=schemas.StopRequest(now=0)),
+    _writable: None = Depends(require_writable),
     conn: sqlite3.Connection = Depends(get_conn),
     runner: Runner = Depends(get_runner),
 ) -> schemas.CaseDetail:

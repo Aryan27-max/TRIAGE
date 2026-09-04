@@ -106,6 +106,7 @@ class Health(BaseModel):
     status: str
     policy_codes_loaded: int
     policy_version: str
+    read_only: bool = False
 
 
 class ErrorDetail(BaseModel):
@@ -164,6 +165,8 @@ class DecideRequest(BaseModel):
     now: int = Field(..., description="Unix seconds. Required — there is no server clock.")
     method: str | None = None
     attempt_number: int = Field(1, ge=1)
+    vpa_handle: str | None = Field(None, description="Narrows the rail-health lookup")
+    payer_bank: str | None = None
 
 
 class AttemptCreate(BaseModel):
@@ -192,6 +195,37 @@ class DowntimeCreate(BaseModel):
     end: int | None = None
 
 
+class RailHealthSnapshot(BaseModel):
+    """What the published Downtime feed says at the decision instant.
+
+    Observable — a real recovery service reads Razorpay's Downtime API — so consulting
+    it is not a hidden-state leak. Returned on every decision so the Inspector can show
+    the same signal the baseline arm acts on.
+    """
+
+    method: str | None = None
+    severity: str | None = None
+    target_rail: str | None = None
+    target_severity: str | None = None
+    active_events: int = 0
+    switch_blocked: bool = Field(
+        False, description="True when the alternate rail is also high-severity"
+    )
+
+
+class ModelDisposition(BaseModel):
+    """Whether the model was consulted, and why not when it was not. (I-1)
+
+    The absence of a model call on 86 of the 110 codes is the structural safety claim,
+    so it is reported explicitly rather than inferred from a missing field.
+    """
+
+    eligible: bool
+    consulted: bool
+    reason: str
+    eligible_actions: list[str] = []
+
+
 class Decision(BaseModel):
     decision_id: str
     error_code: str
@@ -209,6 +243,8 @@ class Decision(BaseModel):
     next_steps: str
     model_eligible: bool
     constraints: dict
+    rail_health: RailHealthSnapshot | None = None
+    model: ModelDisposition | None = None
 
 
 class AttemptRecord(BaseModel):

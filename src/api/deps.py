@@ -18,6 +18,7 @@ from typing import Iterator
 
 from fastapi import Depends, Request
 
+from src.api.errors import ReadOnlyError
 from src.executor.runner import Runner
 from src.policy.engine import PolicyEngine
 from src.simulator.rails import RailHealth
@@ -35,12 +36,22 @@ def get_runner(request: Request) -> Runner:
 
 
 def get_conn(request: Request) -> Iterator[sqlite3.Connection]:
-    conn = db.connect(request.app.state.db_path)
+    read_only = getattr(request.app.state, "read_only", False)
+    conn = db.connect(request.app.state.db_path, read_only=read_only)
     try:
         yield conn
-        conn.commit()
+        if not read_only:
+            conn.commit()
     finally:
         conn.close()
+
+
+def require_writable(request: Request) -> None:
+    """Refuse anything that would mutate the store on a read-only instance."""
+    if getattr(request.app.state, "read_only", False):
+        raise ReadOnlyError(
+            "Writing to the store", step=request.scope.get("path", "unknown")
+        )
 
 
 def get_world(

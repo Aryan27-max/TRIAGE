@@ -20,7 +20,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api import routes_cases, routes_errors, routes_eval, routes_rails
+from src.api import config, routes_cases, routes_errors, routes_eval, routes_rails
 from src.api.errors import TriageAPIError
 from src.api.schemas import Health
 from src.executor.runner import Runner
@@ -56,12 +56,17 @@ Only **27 of the 110** codes are recoverable without human intervention, so a na
 def create_app(
     policy_path: Path | str = DEFAULT_POLICY_PATH,
     *,
-    db_path: Path | str = db.DEFAULT_DB_PATH,
-    sim_seed: int = 42,
+    db_path: Path | str | None = None,
+    sim_seed: int | None = None,
     sim_scenario: str = "normal",
     sim_start_ts: int = DEFAULT_START_TS,
+    read_only: bool | None = None,
 ) -> FastAPI:
     """Build an app bound to one policy table and one store. Tests point elsewhere."""
+
+    resolved_db = Path(db_path) if db_path is not None else config.db_path()
+    resolved_read_only = config.read_only() if read_only is None else read_only
+    resolved_seed = config.sim_seed() if sim_seed is None else sim_seed
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -75,18 +80,21 @@ def create_app(
             ) from exc
         app.state.policy_engine = engine
         app.state.runner = Runner(engine)
-        app.state.db_path = Path(db_path)
-        app.state.sim_seed = sim_seed
+        app.state.db_path = resolved_db
+        app.state.read_only = resolved_read_only
+        app.state.sim_seed = resolved_seed
         app.state.sim_scenario = sim_scenario
         app.state.sim_start_ts = sim_start_ts
 
-        # The schema is idempotent, so this is safe against an existing store and
-        # gives a usable API on a fresh checkout before the simulator has ever run.
-        conn = db.connect(db_path)
-        try:
-            db.init_db(conn)
-        finally:
-            conn.close()
+        if not resolved_read_only:
+            # The schema is idempotent, so this is safe against an existing store and
+            # gives a usable API on a fresh checkout before the simulator has run.
+            resolved_db.parent.mkdir(parents=True, exist_ok=True)
+            conn = db.connect(resolved_db)
+            try:
+                db.init_db(conn)
+            finally:
+                conn.close()
         yield
 
     app = FastAPI(
@@ -96,11 +104,11 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # Wide open: the Stage 5 dashboard is a localhost Next.js app on another port.
-    # This is a prototype with no auth and no customer data behind it.
+    # The Stage 5 dashboard runs on another port locally and another origin when
+    # deployed. Wide open by default; the deploy sets TRIAGE_CORS_ORIGINS explicitly.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=config.cors_origins(),
         allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
@@ -120,6 +128,7 @@ def create_app(
             status="ok",
             policy_codes_loaded=len(engine),
             policy_version=engine.version,
+            read_only=request.app.state.read_only,
         )
 
     app.include_router(routes_errors.router)

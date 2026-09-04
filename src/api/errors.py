@@ -199,3 +199,23 @@ class ConflictError(TriageAPIError):
 
     def __init__(self, description: str, *, reason: str, step: str) -> None:
         super().__init__(description, reason=reason, step=step)
+
+
+class ReadOnlyError(TriageAPIError):
+    """This instance is a read-only exhibit and will not mutate the store.
+
+    The deployed demo serves pre-computed runs baked into the image. Refusing writes
+    is what keeps the numbers in the report the numbers a visitor sees.
+    """
+
+    status_code = 503
+    code = "SERVICE_UNAVAILABLE"
+
+    def __init__(self, what: str, *, step: str) -> None:
+        super().__init__(
+            f"{what} is disabled: this TRIAGE instance is read-only and serves "
+            f"pre-computed evaluation runs. Clone the repo and run it locally to "
+            f"generate your own.",
+            reason="read_only_instance",
+            step=step,
+        )
