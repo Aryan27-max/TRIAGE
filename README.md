@@ -1,4 +1,4 @@
-# TRIAGE
+# TRIAGE - "Safety is structural, not learned."
 
 **A decision layer for failed payments on Razorpay-style rails.** It reads a failure
 reason, checks whether the rail is currently degraded, and returns a bounded, auditable
