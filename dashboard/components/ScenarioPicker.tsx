@@ -45,8 +45,8 @@ export function ScenarioPicker({
   }, [codes, query]);
 
   return (
-    <div className="absolute right-4 top-14 z-20 w-[380px] overflow-hidden rounded-card border border-black/10 bg-white shadow-2xl">
-      <div className="border-b border-black/[0.06] p-3">
+    <div className="absolute right-4 top-14 z-20 flex max-h-[calc(100%-4.5rem)] w-[380px] flex-col overflow-hidden rounded-card border border-black/10 bg-white shadow-2xl">
+      <div className="shrink-0 border-b border-black/[0.06] p-3">
         <p className="text-xs font-medium text-rzp-ink">Inject a failure</p>
         <p className="mt-0.5 text-[11px] text-rzp-ink-dim">
           Any of the 110 published reasons. The next payment fails with it.
@@ -63,7 +63,11 @@ export function ScenarioPicker({
         </div>
       </div>
 
-      <div className="max-h-[300px] overflow-y-auto">
+      {/* Grows/shrinks to whatever space is left after the header, the downtime
+          section and the close button below — those three stay fully visible and
+          this list scrolls internally instead of the whole popup overflowing the
+          checkout card. */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
         {grouped.map((group) => (
           <div key={group.action}>
             <div className="sticky top-0 flex items-center justify-between bg-black/[0.03] px-3 py-1.5 backdrop-blur">
@@ -97,7 +101,7 @@ export function ScenarioPicker({
         )}
       </div>
 
-      <div className="border-t border-black/[0.06] p-3">
+      <div className="shrink-0 border-t border-black/[0.06] p-3">
         <p className="flex items-center gap-1.5 text-xs font-medium text-rzp-ink">
           <Zap size={13} /> Inject a downtime event
         </p>
@@ -123,7 +127,7 @@ export function ScenarioPicker({
       <button
         type="button"
         onClick={onClose}
-        className="w-full border-t border-black/[0.06] py-2 text-[11px] text-rzp-ink-dim hover:bg-black/[0.02]"
+        className="w-full shrink-0 border-t border-black/[0.06] py-2 text-[11px] text-rzp-ink-dim hover:bg-black/[0.02]"
       >
         Close
       </button>

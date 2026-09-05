@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import clsx from "clsx";
 import { Loader2, MoreHorizontal, X } from "lucide-react";
 import type { ErrorPolicy } from "@/lib/api";
@@ -23,6 +24,31 @@ const METHODS = [
 ];
 
 const HANDLES = ["@oksbi", "@ybl", "@paytm", "@okhdfcbank", "@okaxis", "@apl"];
+
+/**
+ * Error codes are snake_case and run up to 37 characters (e.g.
+ * `international_transaction_not_allowed`). A plain wrap or `break-all` breaks
+ * mid-word ("bank_technical_erro" / "r"); `<wbr>` after each underscore gives the
+ * browser a break point at word boundaries instead, falling back to `break-words`
+ * only if a single segment is still too long for the line.
+ */
+function CodeWithBreaks({ code }: { code: string }) {
+  const parts = code.split("_");
+  return (
+    <span className="break-words">
+      {parts.map((part, i) => (
+        <span key={i}>
+          {part}
+          {i < parts.length - 1 ? (
+            <>
+              _<wbr />
+            </>
+          ) : null}
+        </span>
+      ))}
+    </span>
+  );
+}
 
 export type CheckoutSubmission = {
   method: string;
@@ -56,9 +82,10 @@ export function Checkout({
     <div className="relative overflow-hidden rounded-shell border-4 border-rzp-blue-border bg-rzp-surface shadow-2xl">
       <div className="flex min-h-[560px]">
         {/* Merchant panel — left ~38%, blue gradient */}
-        <aside className="relative w-[38%] shrink-0 bg-gradient-to-br from-rzp-blue to-rzp-blue-deep p-6 text-white">
-          <div className="flex items-baseline gap-2">
-            <span className="text-lg font-semibold tracking-tight">TRIAGE</span>
+        <aside className="flex w-[38%] shrink-0 flex-col bg-gradient-to-br from-rzp-blue to-rzp-blue-deep p-6 text-white">
+          <div className="flex min-w-0 items-center gap-2">
+            <Image src="/logo.png" alt="" width={22} height={22} className="h-[22px] w-[22px] shrink-0" />
+            <span className="truncate text-lg font-semibold tracking-tight">TRIAGE</span>
           </div>
           <p className="mt-0.5 text-[11px] text-white/60">Simulated merchant</p>
 
@@ -71,7 +98,7 @@ export function Checkout({
             </p>
           </div>
 
-          <div className="mt-6 inline-flex items-center rounded-control bg-rzp-offer-bg px-2.5 py-1 text-xs font-medium text-rzp-offer-fg">
+          <div className="mt-6 inline-flex w-fit items-center rounded-control bg-rzp-offer-bg px-2.5 py-1 text-xs font-medium text-rzp-offer-fg">
             ₹100 cashback on UPI
           </div>
 
@@ -83,10 +110,14 @@ export function Checkout({
           <button
             type="button"
             onClick={() => setPickerOpen((open) => !open)}
-            className="absolute bottom-6 left-6 flex items-center gap-1.5 rounded-control border border-white/25 px-2.5 py-1.5 text-xs text-white/85 transition-colors hover:bg-white/10"
+            className="mt-auto flex w-full flex-col items-start gap-1 rounded-control border border-white/25 px-3 py-2 text-left transition-colors hover:bg-white/10"
           >
-            Scenario
-            <span className="font-mono text-[11px] text-white/60">{errorCode}</span>
+            <span className="text-[11px] uppercase tracking-wide text-yellow-500">
+              Select Scenario
+            </span>
+            <span className="w-full font-mono text-[11px] leading-snug text-white/85">
+              <CodeWithBreaks code={errorCode} />
+            </span>
           </button>
         </aside>
 
@@ -237,7 +268,10 @@ export function Checkout({
               {selected && (
                 <p className="mt-6 rounded-control bg-black/[0.03] px-3 py-2 text-[11px] leading-relaxed text-rzp-ink-dim">
                   This attempt is scripted to fail with{" "}
-                  <span className="font-mono text-rzp-ink">{selected.code}</span>.
+                  <span className="font-mono text-rzp-ink">
+                    <CodeWithBreaks code={selected.code} />
+                  </span>
+                  .
                 </p>
               )}
             </div>

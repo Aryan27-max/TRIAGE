@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { usePathname } from "next/navigation";
 import clsx from "clsx";
 import { ApiStatus } from "./ApiStatus";
@@ -17,10 +18,13 @@ export function Nav() {
   return (
     <header className="sticky top-0 z-30 border-b border-ink-line bg-ink-900/95 backdrop-blur">
       <div className="mx-auto flex w-full max-w-[1600px] items-center gap-8 px-6 py-3">
-        <Link href="/" className="flex items-baseline gap-2">
-          <span className="text-lg font-semibold tracking-tight text-fg">TRIAGE</span>
-          <span className="hidden text-xs text-fg-dim sm:inline">
-            the decision layer for payment failures
+        <Link href="/" className="flex items-center gap-2.5">
+          <Image src="/logo.png" alt="" width={24} height={24} className="h-6 w-6 shrink-0" priority />
+          <span className="flex items-baseline gap-2">
+            <span className="text-lg font-semibold tracking-tight text-fg">TRIAGE</span>
+            <span className="hidden text-xs text-fg-dim sm:inline">
+              the decision layer for payment failures
+            </span>
           </span>
         </Link>
         <nav className="flex items-center gap-1">
