@@ -198,3 +198,66 @@ identical rendered markdown.
 Beyond the submission: **an explorer arm** is the highest-value change to the system
 itself, since without it the timing model is untrainable in principle rather than merely
 underfit; and **abandonment is still unmodelled**, which is why `SWITCH_RAIL` loses.
+
+---
+## Deployment — Hugging Face Spaces + Vercel
+
+Host pivot from Render/Railway to **HF Spaces (Docker SDK)** for the API, Vercel for the
+dashboard. `DEPLOYMENT.md` carries the full split and the exact push commands.
+
+**Changed.** `Dockerfile`: added `ENV PORT=7860` and moved `CMD` to shell form
+(`--port ${PORT}`), `EXPOSE 7860`. The old `${PORT:-8000}` default was the real bug —
+HF Spaces never sets `$PORT` and proxies to 7860, so the container would have listened
+on 8000 and the Space would have come up unhealthy. A host that injects its own `$PORT`
+still overrides the image default, so Render/Railway compatibility is unchanged. *(The
+old `CMD ["sh","-c","…"]` array form did expand `${PORT}` correctly — exec-form arrays
+only fail to expand when they don't invoke a shell — so that half of the suspicion was
+unfounded; the wrong default was the actual defect.)* CORS now reads **`ALLOWED_ORIGINS`**,
+falling back to `TRIAGE_CORS_ORIGINS` so pre-rename deploy configs keep working. New
+`.dockerignore` (build context only — the Dockerfile never did `COPY . .`, so no image
+content changes; `eval/runs/*.db` explicitly re-included). New
+`scripts/sync_hf_space.sh` rebuilds the gitignored `hf-space/` staging directory.
+
+**Already correct, no change.** The dashboard's API base URL was already env-driven
+through one `API_URL` constant in `dashboard/lib/api.ts` (`NEXT_PUBLIC_API_URL`, local
+fallback only), used by the single `fetch` wrapper — no hardcoded URL anywhere.
+`GET /health` already returned `read_only`; `POST /v1/simulator/run` was already behind
+`require_writable` → 503. There is no "run simulator" control in the four screens, so
+nothing to hide.
+
+**Verified.** 544 tests still pass. Docker Desktop's engine was unavailable in the
+session, so the image was **not** built; verified instead by running uvicorn with
+`PORT=7860 TRIAGE_READ_ONLY=true` — `/health` → `read_only: true`,
+`/v1/errors/meta/coverage` → the 27-of-110 summary, `POST /v1/simulator/run` → 503 (not
+500). CORS with a fake `ALLOWED_ORIGINS`: preflight from a matching origin 200 + echoed
+header, mismatched preflight 400; simple GET from a mismatched origin returns 200 with
+**no** `Access-Control-Allow-Origin` — the standard browser-enforced behaviour, not a
+server-side block.
+
+**Needs a human.** `docker build` once locally (or trust HF's first build log); create
+the Space and push `hf-space/` to its remote; set `ALLOWED_ORIGINS` on the Space and
+`NEXT_PUBLIC_API_URL` on Vercel after each side's domain exists. `render.yaml` and
+`PRODUCTION-VIEW.md` are superseded but left in place.
+
+### Azure App Service for Containers — second target, no code change
+
+Added as an alternative to HF Spaces; `AZURE.md` has both the portal and CLI paths.
+**Nothing in `src/` changed to support it** — the only `src/` diff remains the
+`ALLOWED_ORIGINS` rename from the pass above. Azure builds this repo's `Dockerfile`
+directly, so `hf-space/` is irrelevant to it and was left untouched.
+
+The one Azure-specific fact worth carrying: Azure routes to whatever `WEBSITES_PORT`
+says, so that app setting must equal the container's listening port. `ENV PORT=7860`
+already makes that 7860 — `WEBSITES_PORT=7860` and it works; omit it and Azure probes
+80/8080, every request times out, and the logs read like a crash that never happened.
+A paid B1 Linux plan and a container registry (App Service deploys images, not source)
+are the two prerequisites.
+
+Re-verified this pass rather than assumed: `ENV PORT=7860` + shell-form
+`CMD … --port ${PORT}` intact; `allow_origins=config.cors_origins()` with no hardcoded
+URL anywhere in `src/api/`; `eval/runs/*.db` and `eval/model/` still `COPY`'d in at
+build time. Every filesystem write in `src/` is either gated (`main.py`'s `init_db`
+behind `if not resolved_read_only`, the store behind `mode=ro`) or unreachable from the
+API — `src/api/` imports nothing from `src/model/`, and `eval.report.write_report` is
+CLI-only; the API imports only `build`. Proved it empirically too: snapshotted 53 files,
+exercised every read route plus a refused write, and the tree came back byte-identical.

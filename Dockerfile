@@ -31,11 +31,16 @@ COPY eval/runs/ ./eval/runs/
 ENV PATH="/app/.venv/bin:${PATH}" \
     TRIAGE_READ_ONLY=true \
     TRIAGE_DB_DIR=/app/eval/runs \
-    TRIAGE_DB_PATH=/app/eval/runs/exhibit.db
+    TRIAGE_DB_PATH=/app/eval/runs/exhibit.db \
+    PORT=7860
 
 # A writable scratch store for the read-only path to open. It is never written to;
 # SQLite still wants a file to exist behind `mode=ro`.
 RUN python -c "import sys; sys.path.insert(0,'.'); from src.store import db; db.open_db('/app/eval/runs/exhibit.db').close()"
 
-EXPOSE 8000
-CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# 7860 is Hugging Face Spaces' fixed convention (it does not inject $PORT itself).
+# Render/Railway-style hosts still work: they inject their own $PORT at container
+# start, which overrides this image-baked default — shell form so ${PORT} actually
+# expands rather than being passed to uvicorn as a literal string.
+EXPOSE 7860
+CMD uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT}

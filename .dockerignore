@@ -1,0 +1,34 @@
+# Keeps the build context small and fast to send to the daemon. The Dockerfile only
+# ever COPYs specific named paths (never "COPY . ."), so nothing here changes what
+# lands in the image — this only stops irrelevant, sometimes-huge directories from
+# being uploaded to the Docker daemon before the build even starts.
+
+.git/
+.gitignore
+.venv/
+__pycache__/
+**/__pycache__/
+*.pyc
+.pytest_cache/
+.scratch/
+.verify/
+
+# The dashboard is a separate deploy target (Vercel); its node_modules/.next are
+# large and irrelevant to the API image.
+dashboard/
+node_modules/
+.next/
+
+# Reference-only and dev-only; never imported by code, never copied into the image.
+research/
+docs/
+tests/
+
+# Local env files must never end up in a build context, let alone an image layer.
+.env
+.env.local
+
+# eval/runs/*.db is the one exception to "exclude databases" — those two files are
+# the pre-computed evaluation runs the read-only image bakes in and serves.
+*.db
+!eval/runs/*.db

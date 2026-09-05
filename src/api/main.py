@@ -105,7 +105,7 @@ def create_app(
     )
 
     # The Stage 5 dashboard runs on another port locally and another origin when
-    # deployed. Wide open by default; the deploy sets TRIAGE_CORS_ORIGINS explicitly.
+    # deployed. Wide open by default; the deploy sets ALLOWED_ORIGINS explicitly.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=config.cors_origins(),

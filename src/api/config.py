@@ -44,13 +44,19 @@ def runs_dir() -> Path:
 
 
 def cors_origins() -> list[str]:
-    """Allowed origins.
+    """Allowed origins, comma-separated, split at startup.
 
     Wide open locally, because the dashboard runs on another port and there is no
     auth and no data worth stealing. In production the deploy sets an explicit list —
     `*` on a public origin is a habit worth not forming even when it is harmless.
+
+    ``ALLOWED_ORIGINS`` is the name to set. ``TRIAGE_CORS_ORIGINS`` is read as a
+    fallback for deploy configs written before the rename; new configs should use
+    ``ALLOWED_ORIGINS``.
     """
-    raw = os.environ.get("TRIAGE_CORS_ORIGINS", "").strip()
+    raw = os.environ.get("ALLOWED_ORIGINS", "").strip()
+    if not raw:
+        raw = os.environ.get("TRIAGE_CORS_ORIGINS", "").strip()
     if raw:
         return [origin.strip() for origin in raw.split(",") if origin.strip()]
     return ["*"]
