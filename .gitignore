@@ -10,11 +10,6 @@ node_modules/
 dashboard/.env.local
 *.tsbuildinfo
 
-# Staging area for the Hugging Face Space deploy target — a separate git repo pushed
-# to a separate remote, not part of this submission. See DEPLOYMENT.md. Regenerated
-# by scripts/sync_hf_space.sh, so nothing here is lost by not tracking it.
-hf-space/
-
 # The working store, rebuilt by the simulator on demand.
 /triage.db
 

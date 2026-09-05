@@ -1,0 +1,61 @@
+TRIAGE — pre-push live verification baseline
+captured: 2026-09-05 11:07:02 UTC
+target:   https://triage-api-production-00b4.up.railway.app
+commit:   859b748 (main)
+produced by: scripts/verify_live.sh
+
+Compare against this AFTER the post-push redeploy. Any difference is a
+regression to investigate before continuing to the Vercel steps.
+===================================================================
+
+TRIAGE — live verification
+base: https://triage-api-production-00b4.up.railway.app
+
+[1] GET /health
+  PASS  200
+  PASS  policy table loaded (110 codes)
+      read_only reported as: "read_only":true
+
+[2] GET /v1/errors/meta/coverage
+  PASS  total_codes = 110
+  PASS  recoverable_codes = 27
+
+[3] GET /v1/errors/insufficient_funds
+  PASS  action = RETRY_SCHEDULED
+  PASS  min_wait_hours = 72
+
+[4] POST /v1/recovery/decide — one code per action class (all 8)
+  PASS  RETRY_NOW <- duplicate_rrn_found
+  PASS  RETRY_SCHEDULED <- bank_cutoff_in_progress
+  PASS  SWITCH_RAIL <- authorisation_declined_by_psp
+  PASS  SWITCH_INSTRUMENT <- amount_less_than_minimum_amount
+  PASS  NUDGE_CUSTOMER <- authentication_failed
+  PASS  AWAIT_STATUS <- capture_failed
+  PASS  STOP <- collect_on_mcc_blocked
+  PASS  MERCHANT_ALERT <- bank_not_enabled
+
+[5] GET /v1/errors/not_a_real_code
+  PASS  404
+  PASS  envelope: error.code
+  PASS  envelope: source
+  PASS  envelope: step
+  PASS  envelope: reason
+
+[6] POST /v1/simulator/run — must be refused on a read-only deployment
+  PASS  503 SERVICE_UNAVAILABLE — TRIAGE_READ_ONLY is set on the platform
+
+[7] GET /v1/rails/health
+  PASS  200
+
+[8] GET /v1/eval/runs
+  PASS  200
+  PASS  at least one run present
+      first run_id: run_DbCttM8e
+
+[9] GET /v1/eval/report/{id}
+  PASS  200 for run_DbCttM8e
+  PASS  report carries arm results
+
+-----------------------------------------------
+passed: 25   failed: 0   config warnings: 0
+RESULT: PASS

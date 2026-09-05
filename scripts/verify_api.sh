@@ -27,10 +27,28 @@ RESULTS=""
 cd "$ROOT"
 rm -rf "$WORK" && mkdir -p "$WORK"
 
+# The POST /v1/simulator/run check writes a run database into eval/runs/. Left behind
+# it would be committed by a `git add -A`, copied into the image by the Dockerfile's
+# `COPY eval/runs/`, and served from /v1/eval/runs next to the real results. Snapshot
+# the directory now so cleanup can delete exactly what this invocation created —
+# a snapshot diff rather than a tracked run id, so it cannot touch a pre-existing file
+# however many runs the script ends up producing.
+RUNS_DIR_ABS="${ROOT}/eval/runs"
+RUNS_BEFORE="${WORK}/runs-before.txt"
+ls -1 "$RUNS_DIR_ABS" 2>/dev/null | sort > "$RUNS_BEFORE" || true
+
 cleanup() {
   if [ -n "${SERVER_PID:-}" ]; then
     kill "$SERVER_PID" 2>/dev/null || true
     wait "$SERVER_PID" 2>/dev/null || true
+  fi
+  # Only files that appeared since the snapshot, and only if we still have it.
+  if [ "${KEEP_DB:-0}" != "1" ] && [ -n "${RUNS_BEFORE:-}" ] && [ -f "${RUNS_BEFORE}" ]; then
+    ls -1 "$RUNS_DIR_ABS" 2>/dev/null | sort \
+      | comm -13 "$RUNS_BEFORE" - \
+      | while read -r created; do
+          [ -n "$created" ] && rm -f "${RUNS_DIR_ABS}/${created}"
+        done
   fi
   [ "${KEEP_DB:-0}" = "1" ] || rm -rf "$WORK"
 }

@@ -1,0 +1,15 @@
+# Railway build/deploy settings. Environment variables are NOT set here — they live on
+# the service's Variables tab so secrets never enter git. See DEPLOYMENT.md.
+#
+# The health check means Railway waits for the API to actually answer before routing
+# traffic to a new deploy, rather than assuming "container started" equals "ready".
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 100
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3

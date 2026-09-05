@@ -38,9 +38,10 @@ ENV PATH="/app/.venv/bin:${PATH}" \
 # SQLite still wants a file to exist behind `mode=ro`.
 RUN python -c "import sys; sys.path.insert(0,'.'); from src.store import db; db.open_db('/app/eval/runs/exhibit.db').close()"
 
-# 7860 is Hugging Face Spaces' fixed convention (it does not inject $PORT itself).
-# Render/Railway-style hosts still work: they inject their own $PORT at container
-# start, which overrides this image-baked default — shell form so ${PORT} actually
-# expands rather than being passed to uvicorn as a literal string.
+# Railway injects its own $PORT at container start, which overrides this image-baked
+# default; shell form so ${PORT} actually expands rather than reaching uvicorn as a
+# literal string. The 7860 default only applies when nothing sets PORT — running the
+# image locally, say. Do not set PORT as a Railway variable: that would shadow the
+# value the platform assigns and the health check would never pass.
 EXPOSE 7860
 CMD uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT}

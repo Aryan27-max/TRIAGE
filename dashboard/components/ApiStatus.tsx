@@ -6,8 +6,8 @@ import { api, type Health } from "@/lib/api";
 type State = "waking" | "up" | "down";
 
 /**
- * Render's free tier sleeps after 15 minutes idle and takes ~50s to wake. Without this
- * the first load of a cold demo looks broken rather than asleep, which is a worse
+ * A cold container can take several seconds to answer its first request. Without this
+ * the first load of a cold demo looks broken rather than starting, which is a worse
  * first impression than a slow one.
  */
 export function ApiStatus() {

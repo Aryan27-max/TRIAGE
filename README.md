@@ -256,14 +256,16 @@ markdown. That has held since Stage 2.
 
 ### Deployment
 
-`Dockerfile` and `render.yaml` deploy the API to Render's free tier with
+`Dockerfile` and `railway.toml` deploy the API to Railway with
 `TRIAGE_READ_ONLY=true`: evaluation runs are baked into the image, and the instance
 refuses every write — enforced both by a route dependency and by opening SQLite through
 `mode=ro`. A public endpoint that can rewrite the numbers the submission reports is not
 a demo. `POST /v1/recovery/decide` stays available because it is stateless.
 
-Render's free tier sleeps after 15 minutes and takes ~50s to wake; the dashboard fires
-`GET /health` on load and shows a waking state rather than appearing broken.
+The backend is live on Railway and redeploys automatically on a push to `main`; the
+dashboard goes to Vercel with `dashboard/` as its root directory, reading the API's
+location from `NEXT_PUBLIC_API_URL`. `DEPLOYMENT.md` has the full path and
+`scripts/verify_live.sh` checks the deployed instance end to end.
 
 ---
 
