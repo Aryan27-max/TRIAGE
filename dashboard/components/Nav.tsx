@@ -47,8 +47,17 @@ export function Nav() {
             );
           })}
         </nav>
-        <div className="ml-auto">
+        <div className="ml-auto flex items-center gap-3">
           <ApiStatus />
+          <a
+            href="https://github.com/Aryan27-max/TRIAGE"
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="View TRIAGE on GitHub"
+            className="opacity-60 transition-opacity hover:opacity-100"
+          >
+            <Image src="/github.svg" alt="" width={16} height={16} className="h-4 w-4 invert" />
+          </a>
         </div>
       </div>
     </header>
