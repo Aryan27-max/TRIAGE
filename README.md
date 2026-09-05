@@ -407,11 +407,4 @@ trademarked card-network marks. The footer reads *Simulated environment · TRIAG
 `error_policy.json` is ground truth for this repo and has never been edited to make a
 result come out better.
 
----
 
-## Live links
-
-| | |
-|---|---|
-| **API** | https://triage-api-production-00b4.up.railway.app — read-only exhibit. `/docs` renders the full OpenAPI spec; `/v1/errors/meta/coverage` returns the 27-of-110 finding; every write returns `503`. |
-| **Dashboard** | Not yet deployed — see `POST-DEPLOY-CHECKLIST.md`. Serves the pre-computed evaluation runs baked into the API image. |
